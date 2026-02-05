@@ -24,18 +24,22 @@ class DynamicHeaderInterceptor(
   private val headerProviderRef: WeakReference<DynamicHeaderProvider>
 ) : Interceptor {
 
+  companion object {
+    private const val TAG = "EXPO_VIDEO"
+  }
+
   override fun intercept(chain: Interceptor.Chain): Response {
     val originalRequest = chain.request()
     val provider = headerProviderRef.get()
 
-    println("!!! EXPO_VIDEO_TEST: intercept called for: ${originalRequest.url}")
-    println("!!! EXPO_VIDEO_TEST: provider is null: ${provider == null}")
+    Log.d(TAG, "intercept called for: ${originalRequest.url}")
+    Log.d(TAG, "provider is null: ${provider == null}")
 
     val headers = provider?.getDynamicHeaders() ?: emptyMap()
-    println("!!! EXPO_VIDEO_TEST: headers count: ${headers.size}, headers: $headers")
+    Log.d(TAG, "headers count: ${headers.size}, headers: $headers")
 
     if (headers.isEmpty()) {
-      println("!!! EXPO_VIDEO_TEST: headers empty, proceeding without modification")
+      Log.d(TAG, "headers empty, proceeding without modification")
       return chain.proceed(originalRequest)
     }
 
@@ -45,7 +49,7 @@ class DynamicHeaderInterceptor(
       }
     }.build()
 
-    println("!!! EXPO_VIDEO_TEST: added ${headers.size} headers to request")
+    Log.d(TAG, "added ${headers.size} headers to request")
     return chain.proceed(newRequest)
   }
 }

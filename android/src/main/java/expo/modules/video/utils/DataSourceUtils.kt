@@ -2,6 +2,7 @@ package expo.modules.video
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -17,15 +18,17 @@ import expo.modules.video.utils.DynamicHeaderProvider
 import okhttp3.OkHttpClient
 import java.lang.ref.WeakReference
 
+private const val TAG = "EXPO_VIDEO"
+
 @OptIn(UnstableApi::class)
 fun buildBaseDataSourceFactory(
   context: Context,
   videoSource: VideoSource,
   dynamicHeaderProvider: DynamicHeaderProvider? = null
 ): DataSource.Factory {
-  println("!!! EXPO_VIDEO_TEST: buildBaseDataSourceFactory CALLED !!!")
-  println("!!! EXPO_VIDEO_TEST: uri scheme: ${videoSource.uri?.scheme}")
-  println("!!! EXPO_VIDEO_TEST: enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
+  Log.d(TAG, "buildBaseDataSourceFactory CALLED")
+  Log.d(TAG, "uri scheme: ${videoSource.uri?.scheme}")
+  Log.d(TAG, "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
 
   return if (videoSource.uri?.scheme?.startsWith("http") == true) {
     buildOkHttpDataSourceFactory(context, videoSource, dynamicHeaderProvider)
@@ -42,18 +45,18 @@ fun buildOkHttpDataSourceFactory(
 ): OkHttpDataSource.Factory {
   val clientBuilder = OkHttpClient.Builder()
 
-  println("!!! EXPO_VIDEO_TEST: buildOkHttpDataSourceFactory called")
-  println("!!! EXPO_VIDEO_TEST: enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
-  println("!!! EXPO_VIDEO_TEST: dynamicHeaderProvider is null: ${dynamicHeaderProvider == null}")
+  Log.d(TAG, "buildOkHttpDataSourceFactory called")
+  Log.d(TAG, "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
+  Log.d(TAG, "dynamicHeaderProvider is null: ${dynamicHeaderProvider == null}")
 
   // Add dynamic header interceptor if enabled and provider is available
   if (videoSource.enableDynamicHeaders && dynamicHeaderProvider != null) {
-    println("!!! EXPO_VIDEO_TEST: ADDING DynamicHeaderInterceptor!")
+    Log.d(TAG, "ADDING DynamicHeaderInterceptor!")
     clientBuilder.addInterceptor(
       DynamicHeaderInterceptor(WeakReference(dynamicHeaderProvider))
     )
   } else {
-    println("!!! EXPO_VIDEO_TEST: NOT adding interceptor - conditions not met")
+    Log.d(TAG, "NOT adding interceptor - conditions not met")
   }
 
   val client = clientBuilder.build()
@@ -87,8 +90,10 @@ fun buildCacheDataSourceFactory(
   }
 }
 
+@OptIn(UnstableApi::class)
 fun buildMediaSourceFactory(context: Context, dataSourceFactory: DataSource.Factory): MediaSource.Factory {
-  return DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory)
+  Log.d(TAG, "buildMediaSourceFactory - using custom DataSourceFactory (no context fallback)")
+  return DefaultMediaSourceFactory(dataSourceFactory)
 }
 
 @OptIn(UnstableApi::class)

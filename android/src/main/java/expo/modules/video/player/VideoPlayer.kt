@@ -2,8 +2,9 @@ package expo.modules.video.player
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
-import androidx.media3.common.C
+import android.util.Log
 import android.webkit.URLUtil
+import androidx.media3.common.C
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -361,18 +362,18 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
   }
 
   fun prepare() {
-    println("!!! EXPO_VIDEO_TEST: VideoPlayer.prepare() CALLED !!!")
+    Log.d("EXPO_VIDEO", "VideoPlayer.prepare() CALLED")
     availableVideoTracks = listOf()
     currentVideoTrack = null
 
     val newSource = uncommittedSource
-    println("!!! EXPO_VIDEO_TEST: uncommittedSource is null: ${newSource == null}")
-    println("!!! EXPO_VIDEO_TEST: uncommittedSource uri: ${newSource?.uri}")
-    println("!!! EXPO_VIDEO_TEST: uncommittedSource enableDynamicHeaders: ${newSource?.enableDynamicHeaders}")
+    Log.d("EXPO_VIDEO", "uncommittedSource is null: ${newSource == null}")
+    Log.d("EXPO_VIDEO", "uncommittedSource uri: ${newSource?.uri}")
+    Log.d("EXPO_VIDEO", "uncommittedSource enableDynamicHeaders: ${newSource?.enableDynamicHeaders}")
 
     // Pass this as DynamicHeaderProvider for CMCD support
     val mediaSource = newSource?.toMediaSource(context, this)
-    println("!!! EXPO_VIDEO_TEST: mediaSource is null: ${mediaSource == null}")
+    Log.d("EXPO_VIDEO", "mediaSource is null: ${mediaSource == null}")
 
     mediaSource?.let {
       player.setMediaSource(it)
