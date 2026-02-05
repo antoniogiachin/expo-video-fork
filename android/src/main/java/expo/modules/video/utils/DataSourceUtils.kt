@@ -23,6 +23,10 @@ fun buildBaseDataSourceFactory(
   videoSource: VideoSource,
   dynamicHeaderProvider: DynamicHeaderProvider? = null
 ): DataSource.Factory {
+  android.util.Log.e("EXPO_VIDEO_TEST", "=== buildBaseDataSourceFactory CALLED ===")
+  android.util.Log.e("EXPO_VIDEO_TEST", "uri scheme: ${videoSource.uri?.scheme}")
+  android.util.Log.e("EXPO_VIDEO_TEST", "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
+
   return if (videoSource.uri?.scheme?.startsWith("http") == true) {
     buildOkHttpDataSourceFactory(context, videoSource, dynamicHeaderProvider)
   } else {
@@ -38,11 +42,18 @@ fun buildOkHttpDataSourceFactory(
 ): OkHttpDataSource.Factory {
   val clientBuilder = OkHttpClient.Builder()
 
+  android.util.Log.e("EXPO_VIDEO_TEST", "buildOkHttpDataSourceFactory called")
+  android.util.Log.e("EXPO_VIDEO_TEST", "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
+  android.util.Log.e("EXPO_VIDEO_TEST", "dynamicHeaderProvider is null: ${dynamicHeaderProvider == null}")
+
   // Add dynamic header interceptor if enabled and provider is available
   if (videoSource.enableDynamicHeaders && dynamicHeaderProvider != null) {
+    android.util.Log.e("EXPO_VIDEO_TEST", "ADDING DynamicHeaderInterceptor!")
     clientBuilder.addInterceptor(
       DynamicHeaderInterceptor(WeakReference(dynamicHeaderProvider))
     )
+  } else {
+    android.util.Log.e("EXPO_VIDEO_TEST", "NOT adding interceptor - conditions not met")
   }
 
   val client = clientBuilder.build()

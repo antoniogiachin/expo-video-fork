@@ -1,5 +1,6 @@
 package expo.modules.video.utils
 
+import android.util.Log
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.lang.ref.WeakReference
@@ -25,9 +26,16 @@ class DynamicHeaderInterceptor(
 
   override fun intercept(chain: Interceptor.Chain): Response {
     val originalRequest = chain.request()
-    val headers = headerProviderRef.get()?.getDynamicHeaders() ?: emptyMap()
+    val provider = headerProviderRef.get()
+
+    Log.e("EXPO_VIDEO_TEST", "intercept called for: ${originalRequest.url}")
+    Log.e("EXPO_VIDEO_TEST", "provider is null: ${provider == null}")
+
+    val headers = provider?.getDynamicHeaders() ?: emptyMap()
+    Log.e("EXPO_VIDEO_TEST", "headers count: ${headers.size}, headers: $headers")
 
     if (headers.isEmpty()) {
+      Log.e("EXPO_VIDEO_TEST", "headers empty, proceeding without modification")
       return chain.proceed(originalRequest)
     }
 
@@ -37,6 +45,7 @@ class DynamicHeaderInterceptor(
       }
     }.build()
 
+    Log.e("EXPO_VIDEO_TEST", "added ${headers.size} headers to request")
     return chain.proceed(newRequest)
   }
 }
