@@ -85,7 +85,13 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     let length = dataRequest.requestedLength
 
     // If finding correct subdata failed, fallback to pure received data
-    let subdata = data.subdata(request: currentRequest, response: response) ?? data
+    var subdata = data.subdata(request: currentRequest, response: response) ?? data
+
+    // Rewrite URLs in HLS manifests to use our custom scheme
+    if let mimeType = response.mimeType, isHlsManifest(mimeType: mimeType),
+       let requestUrl = currentRequest.url {
+      subdata = rewriteHlsManifest(data: subdata, baseUrl: requestUrl)
+    }
 
     // Append modified or original data
     cachableRequest.onReceivedData(data: subdata)
@@ -109,6 +115,14 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     didReceive response: URLResponse,
     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
   ) {
+    // Log response for debugging
+    if let httpResponse = response as? HTTPURLResponse {
+      log.info("[ResourceLoaderDelegate] Response status: \(httpResponse.statusCode) for URL: \(dataTask.currentRequest?.url?.absoluteString ?? "unknown")")
+      if httpResponse.statusCode >= 400 {
+        log.error("[ResourceLoaderDelegate] Error response headers: \(httpResponse.allHeaderFields)")
+      }
+    }
+
     if let cachedDataRequest = cachableRequest(by: dataTask) {
       cachedDataRequest.response = response
       if cachedDataRequest.loadingRequest.contentInformationRequest != nil {
@@ -125,6 +139,13 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
     guard let cachedDataRequest = cachableRequest(by: task) else {
       return
+    }
+
+    if let error = error {
+      log.error("[ResourceLoaderDelegate] Task completed with error: \(error.localizedDescription)")
+      if let urlError = error as? URLError {
+        log.error("[ResourceLoaderDelegate] URLError code: \(urlError.code.rawValue)")
+      }
     }
 
     // The data shouldn't be corrupted and can be cached
@@ -147,7 +168,9 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
       return
     }
 
-    var request = remainingRequest ?? createUrlRequest()
+    // Get the actual URL being requested (may be different for HLS segments)
+    let requestUrl = getOriginalUrl(from: loadingRequest) ?? url
+    var request = remainingRequest ?? createUrlRequest(for: requestUrl)
 
     // remainingRequest will have correct range header fields
     if remainingRequest == nil {
@@ -222,7 +245,8 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
       }
       loadingRequest.dataRequest?.respond(with: partialData)
 
-      var request = createUrlRequest()
+      let requestUrl = getOriginalUrl(from: loadingRequest) ?? url
+      var request = createUrlRequest(for: requestUrl)
       if loadingRequest.contentInformationRequest == nil {
         if loadingRequest.dataRequest?.requestsAllDataToEndOfResource == true {
           let requestedOffset = dataRequest.requestedOffset
@@ -267,8 +291,132 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     return mimeType.starts(with: "video/") || mimeType.starts(with: "audio/")
   }
 
-  private func createUrlRequest() -> URLRequest {
-    var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy)
+  /// Determines if a MIME type is an HLS manifest
+  private func isHlsManifest(mimeType: String?) -> Bool {
+    guard let mimeType = mimeType?.lowercased() else { return false }
+    return mimeType.contains("mpegurl") ||
+           mimeType.contains("x-mpegurl") ||
+           mimeType == "application/vnd.apple.mpegurl"
+  }
+
+  /// Rewrites URLs in HLS manifest to use our custom scheme
+  /// This ensures all segment/sub-manifest requests go through our delegate
+  /// Works correctly for both VOD and Live streaming (manifest is re-fetched and rewritten each time)
+  private func rewriteHlsManifest(data: Data, baseUrl: URL) -> Data {
+    guard let manifestString = String(data: data, encoding: .utf8) else {
+      return data
+    }
+
+    let customScheme = VideoCacheManager.expoVideoCacheScheme
+    var rewrittenLines: [String] = []
+    let lines = manifestString.components(separatedBy: "\n")
+
+    for line in lines {
+      let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+
+      // Empty lines - preserve as-is
+      if trimmedLine.isEmpty {
+        rewrittenLines.append(line)
+        continue
+      }
+
+      // Handle URI attributes in tags like #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA, etc.
+      if trimmedLine.hasPrefix("#") && trimmedLine.contains("URI=\"") {
+        let rewrittenLine = rewriteUriAttributes(in: line, baseUrl: baseUrl, customScheme: customScheme)
+        rewrittenLines.append(rewrittenLine)
+        continue
+      }
+
+      // Regular comment/tag lines - preserve as-is
+      if trimmedLine.hasPrefix("#") {
+        rewrittenLines.append(line)
+        continue
+      }
+
+      // This is a URL line (segment or sub-manifest)
+      if let rewrittenUrl = rewriteUrl(trimmedLine, baseUrl: baseUrl, customScheme: customScheme) {
+        rewrittenLines.append(rewrittenUrl)
+      } else {
+        // If we can't rewrite, keep original (shouldn't happen but safe fallback)
+        rewrittenLines.append(line)
+      }
+    }
+
+    let result = rewrittenLines.joined(separator: "\n")
+    log.info("[ResourceLoaderDelegate] Rewrote HLS manifest URLs to custom scheme (\(lines.count) lines)")
+    return result.data(using: .utf8) ?? data
+  }
+
+  /// Rewrites all URI="..." attributes in a line
+  private func rewriteUriAttributes(in line: String, baseUrl: URL, customScheme: String) -> String {
+    var result = line
+    let pattern = "URI=\"([^\"]+)\""
+
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+      return line
+    }
+
+    let range = NSRange(line.startIndex..., in: line)
+    let matches = regex.matches(in: line, options: [], range: range)
+
+    // Process matches in reverse order to preserve indices
+    for match in matches.reversed() {
+      guard let uriRange = Range(match.range(at: 1), in: line) else { continue }
+      let uriValue = String(line[uriRange])
+
+      if let rewrittenUri = rewriteUrl(uriValue, baseUrl: baseUrl, customScheme: customScheme) {
+        let fullMatchRange = Range(match.range, in: result)!
+        result.replaceSubrange(fullMatchRange, with: "URI=\"\(rewrittenUri)\"")
+      }
+    }
+
+    return result
+  }
+
+  /// Rewrites a single URL to use custom scheme
+  private func rewriteUrl(_ urlString: String, baseUrl: URL, customScheme: String) -> String? {
+    let trimmed = urlString.trimmingCharacters(in: .whitespaces)
+
+    // Handle absolute URLs
+    if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+      guard let url = URL(string: trimmed),
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        return nil
+      }
+      components.scheme = customScheme
+      return components.url?.absoluteString
+    }
+
+    // Handle relative URLs
+    guard let resolvedUrl = URL(string: trimmed, relativeTo: baseUrl)?.absoluteURL,
+          var components = URLComponents(url: resolvedUrl, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    components.scheme = customScheme
+    return components.url?.absoluteString
+  }
+
+  /// Extracts the original URL from a loading request by converting custom scheme back to original
+  private func getOriginalUrl(from loadingRequest: AVAssetResourceLoadingRequest) -> URL? {
+    guard let requestUrl = loadingRequest.request.url else {
+      return nil
+    }
+
+    // Convert from custom scheme (expoVideoCache://) back to original scheme (https://)
+    guard var components = URLComponents(url: requestUrl, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+
+    // Replace custom scheme with https (or use original scheme if stored)
+    if components.scheme == VideoCacheManager.expoVideoCacheScheme {
+      components.scheme = "https"
+    }
+
+    return components.url
+  }
+
+  private func createUrlRequest(for requestUrl: URL) -> URLRequest {
+    var request = URLRequest(url: requestUrl, cachePolicy: .useProtocolCachePolicy)
     request.timeoutInterval = Self.requestTimeoutInterval
 
     // Static headers from VideoSource
@@ -278,6 +426,10 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     if let dynamicHeaders = dynamicHeadersProvider?() {
       dynamicHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
     }
+
+    log.info("[ResourceLoaderDelegate] Creating request for URL: \(requestUrl.absoluteString)")
+    log.info("[ResourceLoaderDelegate] Static headers: \(String(describing: urlRequestHeaders))")
+    log.info("[ResourceLoaderDelegate] Dynamic headers: \(String(describing: dynamicHeadersProvider?()))")
 
     return request
   }

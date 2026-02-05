@@ -156,18 +156,27 @@ var enableDynamicHeaders: Bool = false
 **Aggiunte:**
 
 ```swift
-private let dynamicHeadersProvider: (() -> [String: String]?)?
+internal var dynamicHeadersProvider: (() -> [String: String]?)?
 
 init(..., dynamicHeadersProvider: (() -> [String: String]?)? = nil)
+
+// HLS manifest URL rewriting
+private func isHlsManifest(mimeType: String?) -> Bool
+private func rewriteHlsManifest(data: Data, baseUrl: URL) -> Data
+private func rewriteUrl(_ urlString: String, baseUrl: URL, customScheme: String) -> String?
+private func getOriginalUrl(from loadingRequest: AVAssetResourceLoadingRequest) -> URL?
 ```
 
 **Modifiche:**
 
-- `createUrlRequest()` - inietta headers dinamici da `dynamicHeadersProvider()`
+- `createUrlRequest(for:)` - accetta URL parametro, inietta headers dinamici
+- `processLoadingRequest()` - estrae URL reale dalla loadingRequest per HLS segments
+- `urlSession(_:dataTask:didReceive:)` - riscrive URL nei manifest HLS
+- `attemptToRespondFromCache()` - usa `getOriginalUrl()` per URL corretti
 
 ```swift
-private func createUrlRequest() -> URLRequest {
-  var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy)
+private func createUrlRequest(for requestUrl: URL) -> URLRequest {
+  var request = URLRequest(url: requestUrl, cachePolicy: .useProtocolCachePolicy)
 
   // Static headers
   self.urlRequestHeaders?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
@@ -178,6 +187,11 @@ private func createUrlRequest() -> URLRequest {
   }
 
   return request
+}
+
+// Nel didReceive data:
+if isHlsManifest(mimeType: response.mimeType) {
+    subdata = rewriteHlsManifest(data: subdata, baseUrl: requestUrl)
 }
 ```
 
@@ -264,13 +278,68 @@ Property("dynamicRequestHeaders") { player -> [String: String] in
 
 ---
 
+## HLS Manifest URL Rewriting (iOS)
+
+Per far funzionare gli headers dinamici con HLS su iOS, è necessario riscrivere gli URL nei manifest.
+
+### Problema
+
+`AVAssetResourceLoaderDelegate` intercetta solo le richieste con lo scheme custom (`expoVideoCache://`):
+
+```
+expoVideoCache://cdn.com/master.m3u8  ◄── Intercettato!
+  │
+  └── Contenuto manifest:
+        #EXTINF:10.0
+        https://cdn.com/segment1.ts  ◄── NON intercettato (scheme diverso)
+        https://cdn.com/segment2.ts  ◄── NON intercettato
+```
+
+### Soluzione
+
+Il `ResourceLoaderDelegate` riscrive automaticamente gli URL nei manifest HLS:
+
+```swift
+// Quando riceviamo un manifest:
+func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    if isHlsManifest(mimeType: response.mimeType) {
+        // Riscrive tutti gli URL per usare il nostro scheme custom
+        subdata = rewriteHlsManifest(data: subdata, baseUrl: requestUrl)
+    }
+}
+```
+
+**Risultato:**
+
+```
+expoVideoCache://cdn.com/master.m3u8  ◄── Intercettato
+  │
+  └── Contenuto riscritto:
+        #EXTINF:10.0
+        expoVideoCache://cdn.com/segment1.ts  ◄── Intercettato!
+        expoVideoCache://cdn.com/segment2.ts  ◄── Intercettato!
+```
+
+### Dettagli implementazione
+
+La funzione `rewriteHlsManifest`:
+1. Rileva manifest HLS tramite MIME type (`application/vnd.apple.mpegurl`, etc.)
+2. Parsa tutte le righe del manifest
+3. Riscrive URL assoluti (`https://...`) → `expoVideoCache://...`
+4. Riscrive URL relativi risolvendoli rispetto al base URL
+5. Gestisce anche attributi `URI="..."` in tag come `#EXT-X-KEY`, `#EXT-X-MAP`
+
+---
+
 ## Limitazioni Note
 
 1. **iOS senza cache**: Quando `enableDynamicHeaders=true`, viene forzato l'uso di `ResourceLoaderDelegate` anche senza caching. Questo è necessario perché `AVURLAssetHTTPHeaderFieldsKey` non supporta headers dinamici.
 
-2. **HLS Only (iOS)**: Su iOS, gli headers dinamici funzionano solo con contenuti HLS quando viene usato il ResourceLoaderDelegate.
+2. **HLS Only (iOS)**: Su iOS, gli headers dinamici funzionano solo con contenuti HLS. Per MP4 o altri formati single-file, gli headers dinamici non saranno applicati.
 
 3. **Performance**: Gli headers vengono letti ad ogni richiesta chunk. L'uso di `AtomicReference`/`NSLock` minimizza l'overhead.
+
+4. **Manifest rewriting**: Il rewriting dei manifest HLS aggiunge un piccolo overhead alla prima risposta, ma è necessario per intercettare tutte le richieste successive.
 
 ---
 
