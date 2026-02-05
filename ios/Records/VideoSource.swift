@@ -21,5 +21,8 @@ internal struct VideoSource: Record {
 
   @Field
   var contentType: ContentType = .auto
+
+  @Field
+  var enableDynamicHeaders: Bool = false
 }
 // swiftlint:enable redundant_optional_initialization

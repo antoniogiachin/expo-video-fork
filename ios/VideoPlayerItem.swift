@@ -15,7 +15,7 @@ class VideoPlayerItem: AVPlayerItem {
 
   private var tracksLoadingTask: Task<[VideoTrack], Never>?
 
-  init?(videoSource: VideoSource) {
+  init?(videoSource: VideoSource, videoPlayer: VideoPlayer? = nil) {
     guard let url = videoSource.uri else {
       return nil
     }
@@ -23,12 +23,14 @@ class VideoPlayerItem: AVPlayerItem {
     self.isHls = videoSource.uri?.pathExtension == "m3u8" || videoSource.contentType == .hls
 
     let asset = VideoAsset(url: url, videoSource: videoSource)
+    // Set the dynamic header provider for CMCD support
+    asset.dynamicHeaderProvider = videoPlayer
     self.urlAsset = asset
     super.init(asset: urlAsset, automaticallyLoadedAssetKeys: nil)
     self.createTracksLoadingTask()
   }
 
-  init?(videoSource: VideoSource, urlOverride: URL? = nil) async throws {
+  init?(videoSource: VideoSource, urlOverride: URL? = nil, videoPlayer: VideoPlayer? = nil) async throws {
     guard let url = urlOverride ?? videoSource.uri else {
       return nil
     }
@@ -36,6 +38,8 @@ class VideoPlayerItem: AVPlayerItem {
     self.isHls = videoSource.uri?.pathExtension == "m3u8" || videoSource.contentType == .hls
 
     let asset = VideoAsset(url: url, videoSource: videoSource)
+    // Set the dynamic header provider for CMCD support
+    asset.dynamicHeaderProvider = videoPlayer
     self.urlAsset = asset
     // We can ignore any exceptions thrown during the load. The asset will be assigned to the `VideoPlayer` anyways
     // and cause it to go into .error state trigerring the `onStatusChange` event.

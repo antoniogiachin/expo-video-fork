@@ -320,6 +320,13 @@ public final class VideoModule: Module {
         player.ref.preventsDisplaySleepDuringVideoPlayback = keepScreenOnWhilePlaying
       }
 
+      Property("dynamicRequestHeaders") { player -> [String: String] in
+        return player.dynamicRequestHeaders
+      }
+      .set { player, headers in
+        player.dynamicRequestHeaders = headers
+      }
+
       Function("play") { player in
         player.ref.play()
       }

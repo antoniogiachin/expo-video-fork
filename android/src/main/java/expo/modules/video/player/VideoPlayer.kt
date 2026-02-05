@@ -41,13 +41,15 @@ import expo.modules.video.records.TimeUpdate
 import expo.modules.video.records.VideoSource
 import expo.modules.video.utils.MutableWeakReference
 import expo.modules.video.records.VideoTrack
+import expo.modules.video.utils.DynamicHeaderProvider
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicReference
 
 // https://developer.android.com/guide/topics/media/media3/getting-started/migration-guide#improvements_in_media3
 @UnstableApi
-class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSource?) : AutoCloseable, SharedObject(appContext), IntervalUpdateEmitter {
+class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSource?) : AutoCloseable, SharedObject(appContext), IntervalUpdateEmitter, DynamicHeaderProvider {
   // This improves the performance of playing DRM-protected content
   private var renderersFactory = DefaultRenderersFactory(context)
     .forceEnableMediaCodecAsynchronousQueueing()
@@ -184,6 +186,16 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
     private set
 
   var keepScreenOnWhilePlaying by VideoPlayerKeepAwake(this, appContext)
+
+  // Thread-safe storage for dynamic headers (CMCD)
+  private val _dynamicRequestHeaders = AtomicReference<Map<String, String>>(emptyMap())
+
+  var dynamicRequestHeaders: Map<String, String>
+    get() = _dynamicRequestHeaders.get()
+    set(value) = _dynamicRequestHeaders.set(value)
+
+  // DynamicHeaderProvider implementation
+  override fun getDynamicHeaders(): Map<String, String> = dynamicRequestHeaders
 
   private val playerListener = object : Player.Listener {
     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -353,7 +365,8 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
     currentVideoTrack = null
 
     val newSource = uncommittedSource
-    val mediaSource = newSource?.toMediaSource(context)
+    // Pass this as DynamicHeaderProvider for CMCD support
+    val mediaSource = newSource?.toMediaSource(context, this)
 
     mediaSource?.let {
       player.setMediaSource(it)

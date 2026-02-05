@@ -17,6 +17,7 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
   private let fileExtension: String
   private let cachedResource: CachedResource
   private let urlRequestHeaders: [String: String]?
+  private let dynamicHeadersProvider: (() -> [String: String]?)?
   internal var onError: ((Error) -> Void)?
 
   private var cachableRequests: SynchronizedHashTable<CachableRequest> = SynchronizedHashTable()
@@ -36,11 +37,18 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     return self.saveFilePath
   }
 
-  init(url: URL, saveFilePath: String, fileExtension: String, urlRequestHeaders: [String: String]?) {
+  init(
+    url: URL,
+    saveFilePath: String,
+    fileExtension: String,
+    urlRequestHeaders: [String: String]?,
+    dynamicHeadersProvider: (() -> [String: String]?)? = nil
+  ) {
     self.url = url
     self.saveFilePath = saveFilePath
     self.fileExtension = fileExtension
     self.urlRequestHeaders = urlRequestHeaders
+    self.dynamicHeadersProvider = dynamicHeadersProvider
     cachedResource = CachedResource(dataFileUrl: saveFilePath, resourceUrl: url, dataPath: saveFilePath)
     super.init()
     self.session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
@@ -256,7 +264,14 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy)
     request.timeoutInterval = Self.requestTimeoutInterval
 
+    // Static headers from VideoSource
     self.urlRequestHeaders?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+
+    // Dynamic headers (CMCD) - fetched fresh on each request
+    if let dynamicHeaders = dynamicHeadersProvider?() {
+      dynamicHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+    }
+
     return request
   }
 

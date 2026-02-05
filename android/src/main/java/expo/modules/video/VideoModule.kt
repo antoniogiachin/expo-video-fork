@@ -300,6 +300,14 @@ class VideoModule : Module() {
           ref.keepScreenOnWhilePlaying = value ?: true
         }
 
+      Property("dynamicRequestHeaders")
+        .get { ref: VideoPlayer ->
+          ref.dynamicRequestHeaders
+        }
+        .set { ref: VideoPlayer, headers: Map<String, String>? ->
+          ref.dynamicRequestHeaders = headers ?: emptyMap()
+        }
+
       Function("replace") { ref: VideoPlayer, source: Either<Uri, VideoSource>? ->
         replaceImpl(ref, source)
       }

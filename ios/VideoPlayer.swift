@@ -143,6 +143,23 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     return getBufferedPosition()
   }
 
+  // Thread-safe storage for dynamic headers (CMCD)
+  private let dynamicHeadersLock = NSLock()
+  private var _dynamicRequestHeaders: [String: String] = [:]
+
+  var dynamicRequestHeaders: [String: String] {
+    get {
+      dynamicHeadersLock.lock()
+      defer { dynamicHeadersLock.unlock() }
+      return _dynamicRequestHeaders
+    }
+    set {
+      dynamicHeadersLock.lock()
+      defer { dynamicHeadersLock.unlock() }
+      _dynamicRequestHeaders = newValue
+    }
+  }
+
   private(set) var availableVideoTracks: [VideoTrack] = []
   private(set) var currentVideoTrack: VideoTrack? {
     didSet {
@@ -198,7 +215,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     videoSourceLoader.cancelCurrentTask()
     guard
       let videoSource = videoSource,
-      let playerItem = VideoPlayerItem(videoSource: videoSource)
+      let playerItem = VideoPlayerItem(videoSource: videoSource, videoPlayer: self)
     else {
       clearCurrentItem()
       return
@@ -240,7 +257,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     }
 
     dangerousPropertiesStore.ownerIsReplacing = true
-    guard let playerItem = try await videoSourceLoader.load(videoSource: videoSource) else {
+    guard let playerItem = try await videoSourceLoader.load(videoSource: videoSource, videoPlayer: self) else {
       // Resolve the promise without applying the source. The loading task has been cancelled.
       // The caller that cancelled this task should handle dangerousPropertiesStore
       return

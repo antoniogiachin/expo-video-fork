@@ -20,9 +20,9 @@ internal class VideoSourceLoader {
    Asynchronously loads a video item from the provided `videoSource`. If another loading operation is in progress, it will be cancelled.
 
    - Parameter videoSource: The source description for the video to load. If `nil`, the current player item will be cleared.
-   - Parameter player: The `VideoPlayer` instance whose current item will be replaced.
+   - Parameter videoPlayer: The `VideoPlayer` instance for dynamic headers support (CMCD).
    */
-  func load(videoSource: VideoSource) async throws -> VideoPlayerItem? {
+  func load(videoSource: VideoSource, videoPlayer: VideoPlayer? = nil) async throws -> VideoPlayerItem? {
     isLoading = true
     if let currentTask {
       currentTask.cancel()
@@ -32,7 +32,7 @@ internal class VideoSourceLoader {
     }
 
     let newTask = Task {
-      return try await loadImpl(videoSource: videoSource)
+      return try await loadImpl(videoSource: videoSource, videoPlayer: videoPlayer)
     }
 
     self.currentTask = newTask
@@ -61,7 +61,7 @@ internal class VideoSourceLoader {
     cancelCurrentTask()
   }
 
-  private func loadImpl(videoSource: VideoSource) async throws -> LoadingResult {
+  private func loadImpl(videoSource: VideoSource, videoPlayer: VideoPlayer? = nil) async throws -> LoadingResult {
     listeners.forEach { listener in
       listener.value?.onLoadingStarted(loader: self, videoSource: videoSource)
     }
@@ -73,7 +73,7 @@ internal class VideoSourceLoader {
     }
 
     let safeUrl = try await url.toUrlWithPermissions()
-    let playerItem = try await VideoPlayerItem(videoSource: videoSource, urlOverride: safeUrl)
+    let playerItem = try await VideoPlayerItem(videoSource: videoSource, urlOverride: safeUrl, videoPlayer: videoPlayer)
 
     if Task.isCancelled {
       print("The loading task has been cancelled")

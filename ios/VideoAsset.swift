@@ -11,13 +11,31 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
   private let saveFilePath: String?
   private var customFileExtension: String?
   private let useCaching: Bool
+  private let usesDynamicHeaders: Bool
 
   var cachingError: Error?
 
   internal var urlRequestHeaders: [String: String]?
 
+  // Weak reference to VideoPlayer for dynamic headers (CMCD)
+  internal weak var dynamicHeaderProvider: VideoPlayer? {
+    didSet {
+      // Update the closure reference when provider changes
+      updateDynamicHeadersProvider()
+    }
+  }
+
+  // Store closure for dynamic headers
+  private var dynamicHeadersClosure: (() -> [String: String]?)?
+
+  private func updateDynamicHeadersProvider() {
+    // This is called when dynamicHeaderProvider is set
+    // The closure in ResourceLoaderDelegate will capture this reference
+  }
+
   init(url: URL, videoSource: VideoSource) {
     self.videoSource = videoSource
+    self.usesDynamicHeaders = videoSource.enableDynamicHeaders
     let cachedMimeType = MediaInfo(forResourceUrl: url)?.mimeType
     let cachedExtension = mimeTypeToExtension(mimeType: cachedMimeType) ?? ""
     let fileExtension = url.pathExtension.isEmpty ? cachedExtension : url.pathExtension
@@ -48,24 +66,42 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
       log.warn("CachingPlayerItem error: Urls without a scheme are not supported, the resource won't be cached")
     }
 
-    guard let saveFilePath, let urlWithCustomScheme, videoSource.useCaching else {
-      // Initialize with no caching
+    // Use ResourceLoaderDelegate when caching OR when dynamic headers are enabled
+    let shouldUseResourceLoader = videoSource.useCaching || videoSource.enableDynamicHeaders
+
+    guard let saveFilePath, let urlWithCustomScheme, shouldUseResourceLoader else {
+      // Initialize with no caching and no dynamic headers
       useCaching = false
       super.init(url: url, options: assetOptions)
       return
     }
 
-    // Enable caching
-    useCaching = true
-    resourceLoaderDelegate = ResourceLoaderDelegate(url: url, saveFilePath: saveFilePath, fileExtension: fileExtension, urlRequestHeaders: urlRequestHeaders)
+    // Enable ResourceLoaderDelegate (for caching and/or dynamic headers)
+    useCaching = videoSource.useCaching
+
+    // Create closure that captures self weakly for dynamic headers
+    let dynamicHeadersProvider: (() -> [String: String]?)? = videoSource.enableDynamicHeaders ? { [weak self] in
+      return self?.dynamicHeaderProvider?.dynamicRequestHeaders
+    } : nil
+
+    resourceLoaderDelegate = ResourceLoaderDelegate(
+      url: url,
+      saveFilePath: saveFilePath,
+      fileExtension: fileExtension,
+      urlRequestHeaders: urlRequestHeaders,
+      dynamicHeadersProvider: dynamicHeadersProvider
+    )
     super.init(url: urlWithCustomScheme, options: assetOptions)
 
     resourceLoaderDelegate?.onError = { [weak self] error in
       self?.cachingError = error
     }
     self.resourceLoader.setDelegate(resourceLoaderDelegate, queue: VideoCacheManager.shared.cacheQueue)
-    self.createCacheDirectoryIfNeeded()
-    VideoCacheManager.shared.ensureCacheIntegrity(forSavePath: saveFilePath)
+
+    if useCaching {
+      self.createCacheDirectoryIfNeeded()
+      VideoCacheManager.shared.ensureCacheIntegrity(forSavePath: saveFilePath)
+    }
   }
 
   deinit {
