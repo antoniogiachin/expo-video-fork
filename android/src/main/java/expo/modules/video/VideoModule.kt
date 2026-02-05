@@ -68,10 +68,10 @@ class VideoModule : Module() {
 
     Class(VideoPlayer::class) {
       Constructor { source: VideoSource? ->
-        android.util.Log.e("EXPO_VIDEO_TEST", "=== VideoPlayer Constructor CALLED ===")
-        android.util.Log.e("EXPO_VIDEO_TEST", "source is null: ${source == null}")
-        android.util.Log.e("EXPO_VIDEO_TEST", "source uri: ${source?.uri}")
-        android.util.Log.e("EXPO_VIDEO_TEST", "source enableDynamicHeaders: ${source?.enableDynamicHeaders}")
+        println("!!! EXPO_VIDEO_TEST: VideoPlayer Constructor CALLED !!!")
+        println("!!! EXPO_VIDEO_TEST: source is null: ${source == null}")
+        println("!!! EXPO_VIDEO_TEST: source uri: ${source?.uri}")
+        println("!!! EXPO_VIDEO_TEST: source enableDynamicHeaders: ${source?.enableDynamicHeaders}")
 
         val player = VideoPlayer(appContext.throwingActivity.applicationContext, appContext, source)
         appContext.mainQueue.launch {
@@ -405,8 +405,8 @@ class VideoModule : Module() {
     source: Either<Uri, VideoSource>?,
     promise: Promise? = null
   ) {
-    android.util.Log.e("EXPO_VIDEO_TEST", "=== replaceImpl CALLED ===")
-    android.util.Log.e("EXPO_VIDEO_TEST", "source is null: ${source == null}")
+    println("!!! EXPO_VIDEO_TEST: replaceImpl CALLED !!!")
+    println("!!! EXPO_VIDEO_TEST: source is null: ${source == null}")
 
     val videoSource = source?.let {
       if (it.`is`(VideoSource::class)) {
@@ -416,9 +416,9 @@ class VideoModule : Module() {
       }
     }
 
-    android.util.Log.e("EXPO_VIDEO_TEST", "videoSource is null: ${videoSource == null}")
-    android.util.Log.e("EXPO_VIDEO_TEST", "videoSource uri: ${videoSource?.uri}")
-    android.util.Log.e("EXPO_VIDEO_TEST", "videoSource enableDynamicHeaders: ${videoSource?.enableDynamicHeaders}")
+    println("!!! EXPO_VIDEO_TEST: videoSource is null: ${videoSource == null}")
+    println("!!! EXPO_VIDEO_TEST: videoSource uri: ${videoSource?.uri}")
+    println("!!! EXPO_VIDEO_TEST: videoSource enableDynamicHeaders: ${videoSource?.enableDynamicHeaders}")
 
     appContext.mainQueue.launch {
       ref.uncommittedSource = videoSource

@@ -28,14 +28,14 @@ class DynamicHeaderInterceptor(
     val originalRequest = chain.request()
     val provider = headerProviderRef.get()
 
-    Log.e("EXPO_VIDEO_TEST", "intercept called for: ${originalRequest.url}")
-    Log.e("EXPO_VIDEO_TEST", "provider is null: ${provider == null}")
+    println("!!! EXPO_VIDEO_TEST: intercept called for: ${originalRequest.url}")
+    println("!!! EXPO_VIDEO_TEST: provider is null: ${provider == null}")
 
     val headers = provider?.getDynamicHeaders() ?: emptyMap()
-    Log.e("EXPO_VIDEO_TEST", "headers count: ${headers.size}, headers: $headers")
+    println("!!! EXPO_VIDEO_TEST: headers count: ${headers.size}, headers: $headers")
 
     if (headers.isEmpty()) {
-      Log.e("EXPO_VIDEO_TEST", "headers empty, proceeding without modification")
+      println("!!! EXPO_VIDEO_TEST: headers empty, proceeding without modification")
       return chain.proceed(originalRequest)
     }
 
@@ -45,7 +45,7 @@ class DynamicHeaderInterceptor(
       }
     }.build()
 
-    Log.e("EXPO_VIDEO_TEST", "added ${headers.size} headers to request")
+    println("!!! EXPO_VIDEO_TEST: added ${headers.size} headers to request")
     return chain.proceed(newRequest)
   }
 }
