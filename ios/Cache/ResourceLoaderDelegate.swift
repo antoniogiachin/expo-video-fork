@@ -17,7 +17,7 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
   private let fileExtension: String
   private let cachedResource: CachedResource
   private let urlRequestHeaders: [String: String]?
-  private let dynamicHeadersProvider: (() -> [String: String]?)?
+  internal var dynamicHeadersProvider: (() -> [String: String]?)?
   internal var onError: ((Error) -> Void)?
 
   private var cachableRequests: SynchronizedHashTable<CachableRequest> = SynchronizedHashTable()

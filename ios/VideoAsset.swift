@@ -79,19 +79,24 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
     // Enable ResourceLoaderDelegate (for caching and/or dynamic headers)
     useCaching = videoSource.useCaching
 
-    // Create closure that captures self weakly for dynamic headers
-    let dynamicHeadersProvider: (() -> [String: String]?)? = videoSource.enableDynamicHeaders ? { [weak self] in
-      return self?.dynamicHeaderProvider?.dynamicRequestHeaders
-    } : nil
-
+    // Create ResourceLoaderDelegate without dynamic headers closure first
+    // (closure will be set up after super.init since it needs to capture self)
+    let enableDynamicHeaders = videoSource.enableDynamicHeaders
     resourceLoaderDelegate = ResourceLoaderDelegate(
       url: url,
       saveFilePath: saveFilePath,
       fileExtension: fileExtension,
       urlRequestHeaders: urlRequestHeaders,
-      dynamicHeadersProvider: dynamicHeadersProvider
+      dynamicHeadersProvider: nil
     )
     super.init(url: urlWithCustomScheme, options: assetOptions)
+
+    // Now we can safely set up closures that capture self
+    if enableDynamicHeaders {
+      resourceLoaderDelegate?.dynamicHeadersProvider = { [weak self] in
+        return self?.dynamicHeaderProvider?.dynamicRequestHeaders
+      }
+    }
 
     resourceLoaderDelegate?.onError = { [weak self] error in
       self?.cachingError = error

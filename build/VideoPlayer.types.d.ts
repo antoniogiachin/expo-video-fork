@@ -203,6 +203,17 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
      */
     readonly isExternalPlaybackActive: boolean;
     /**
+     * Dynamic headers that will be added to segment/chunk HTTP requests.
+     * These headers can be updated at any time without reloading the source.
+     * Useful for CMCD (CTA-5004) or other dynamic header injection.
+     *
+     * > Note: Requires `enableDynamicHeaders: true` in the VideoSource configuration.
+     *
+     * @platform android
+     * @platform ios
+     */
+    dynamicRequestHeaders: Record<string, string>;
+    /**
      * Initializes a new video player instance with the given source.
      *
      * @param source The source of the video to be played.
@@ -325,6 +336,17 @@ export type VideoSource = string | number | null | {
      * @platform ios
      */
     contentType?: ContentType;
+    /**
+     * Enables dynamic header support for this source.
+     * When enabled, the `dynamicRequestHeaders` property on VideoPlayer
+     * will be read for each segment/chunk request, allowing CMCD (CTA-5004)
+     * or other dynamic headers to be injected per-request.
+     *
+     * @default false
+     * @platform android
+     * @platform ios
+     */
+    enableDynamicHeaders?: boolean;
 };
 /**
  * Contains information about any errors that the player encountered during the playback
