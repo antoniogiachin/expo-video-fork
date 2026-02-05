@@ -386,6 +386,64 @@ public final class VideoModule: Module {
     OnAppEntersForeground {
       VideoManager.shared.onAppForegrounded()
     }
+
+    // MARK: - CMCD Proxy Functions
+
+    AsyncFunction("startCMCDProxy") {
+      if #available(iOS 13.0, *) {
+        try CMCDProxyManager.shared.start()
+      } else {
+        throw Exception(name: "CMCDProxyUnavailable", description: "CMCD Proxy requires iOS 13.0 or later")
+      }
+    }
+
+    Function("stopCMCDProxy") {
+      if #available(iOS 13.0, *) {
+        CMCDProxyManager.shared.stop()
+      }
+    }
+
+    Function("isCMCDProxyRunning") { () -> Bool in
+      if #available(iOS 13.0, *) {
+        return CMCDProxyManager.shared.isRunning
+      }
+      return false
+    }
+
+    Function("getCMCDProxyPort") { () -> Int in
+      if #available(iOS 13.0, *) {
+        return Int(CMCDProxyManager.shared.port)
+      }
+      return 0
+    }
+
+    Function("getCMCDProxyBaseUrl") { () -> String? in
+      if #available(iOS 13.0, *) {
+        return CMCDProxyManager.shared.baseUrl
+      }
+      return nil
+    }
+
+    Function("createCMCDProxyUrl") { (originalUrl: String) -> String? in
+      if #available(iOS 13.0, *) {
+        return CMCDProxyManager.shared.createProxyUrl(for: originalUrl)
+      }
+      return nil
+    }
+
+    Function("extractCMCDOriginalUrl") { (proxyUrl: String) -> String? in
+      if #available(iOS 13.0, *) {
+        guard let url = URL(string: proxyUrl) else { return nil }
+        return CMCDProxyManager.shared.extractOriginalUrl(from: url)?.absoluteString
+      }
+      return nil
+    }
+
+    Function("setCMCDProxyStaticHeaders") { (headers: [String: String]) in
+      if #available(iOS 13.0, *) {
+        CMCDProxyManager.shared.setStaticHeaders(headers)
+      }
+    }
   }
 
   private func parseSource(source: Either<String, VideoSource>?) -> VideoSource? {

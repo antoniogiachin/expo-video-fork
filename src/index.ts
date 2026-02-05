@@ -6,6 +6,8 @@ export {
 } from './VideoModule';
 export { VideoView } from './VideoView';
 export { useVideoPlayer } from './VideoPlayer';
+export { CMCDProxy, formatCmcdHeaders, generateSessionId } from './CMCDProxy';
+export type { CmcdData } from './CMCDProxy';
 
 export type { VideoContentFit, VideoViewProps, SurfaceType } from './VideoView.types';
 export type { VideoThumbnail } from './VideoThumbnail';

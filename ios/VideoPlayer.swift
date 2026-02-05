@@ -160,6 +160,54 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     }
   }
 
+  // MARK: - CMCD Proxy Support
+
+  /// Processes the video source for CMCD proxy support.
+  /// If `enableDynamicHeaders` is true, starts the proxy and transforms the URL.
+  private func processSourceForCMCD(_ source: VideoSource) -> VideoSource {
+    guard source.enableDynamicHeaders else {
+      return source
+    }
+
+    guard #available(iOS 13.0, *) else {
+      log.warn("[VideoPlayer] CMCD proxy requires iOS 13.0+, ignoring enableDynamicHeaders")
+      return source
+    }
+
+    // Start proxy if needed
+    if !CMCDProxyManager.shared.isRunning {
+      do {
+        try CMCDProxyManager.shared.start()
+      } catch {
+        log.error("[VideoPlayer] Failed to start CMCD proxy: \(error)")
+        return source
+      }
+    }
+
+    // Configure proxy to read headers from this player
+    CMCDProxyManager.shared.configureForPlayer(self)
+
+    // Transform URL to proxy URL
+    guard let originalUri = source.uri,
+          let proxyUrl = CMCDProxyManager.shared.createProxyUrl(for: originalUri) else {
+      log.warn("[VideoPlayer] Failed to create proxy URL for \(source.uri?.absoluteString ?? "nil")")
+      return source
+    }
+
+    log.info("[VideoPlayer] CMCD proxy enabled, URL transformed to: \(proxyUrl.absoluteString)")
+
+    // Create new source with proxy URL
+    var proxiedSource = VideoSource()
+    proxiedSource.uri = proxyUrl
+    proxiedSource.drm = source.drm
+    proxiedSource.metadata = source.metadata
+    proxiedSource.headers = source.headers
+    proxiedSource.useCaching = source.useCaching
+    proxiedSource.contentType = source.contentType
+    proxiedSource.enableDynamicHeaders = false // Don't process again
+    return proxiedSource
+  }
+
   private(set) var availableVideoTracks: [VideoTrack] = []
   private(set) var currentVideoTrack: VideoTrack? {
     didSet {
@@ -213,9 +261,13 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
   func replaceCurrentItem(with videoSource: VideoSource?) throws {
     dangerousPropertiesStore.ownerIsReplacing = true
     videoSourceLoader.cancelCurrentTask()
+
+    // Process source for CMCD proxy if needed
+    let processedSource = videoSource.map { processSourceForCMCD($0) }
+
     guard
-      let videoSource = videoSource,
-      let playerItem = VideoPlayerItem(videoSource: videoSource, videoPlayer: self)
+      let videoSource = processedSource,
+      let playerItem = VideoPlayerItem(videoSource: videoSource)
     else {
       clearCurrentItem()
       return
@@ -251,19 +303,22 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
    * Replaces the current item, while loading the AVAsset on a different thread. The synchronous version can lock the main thread for extended periods of time.
    */
   func replaceCurrentItem(with videoSource: VideoSource?) async throws {
-    guard let videoSource, videoSource.uri != nil else {
+    guard let originalSource = videoSource, originalSource.uri != nil else {
       clearCurrentItem()
       return
     }
 
+    // Process source for CMCD proxy if needed
+    let videoSource = processSourceForCMCD(originalSource)
+
     dangerousPropertiesStore.ownerIsReplacing = true
-    guard let playerItem = try await videoSourceLoader.load(videoSource: videoSource, videoPlayer: self) else {
+    guard let playerItem = try await videoSourceLoader.load(videoSource: videoSource) else {
       // Resolve the promise without applying the source. The loading task has been cancelled.
       // The caller that cancelled this task should handle dangerousPropertiesStore
       return
     }
 
-    if let drm = videoSource.drm {
+    if let drm = originalSource.drm {
       try drm.type.assertIsSupported()
       self.contentKeyManager.addContentKeyRequest(videoSource: videoSource, asset: playerItem.urlAsset)
     }

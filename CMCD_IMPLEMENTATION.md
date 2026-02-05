@@ -4,359 +4,118 @@ Questo documento descrive l'implementazione del supporto CMCD (Common Media Clie
 
 ## Overview
 
-CMCD (CTA-5004) è uno standard per comunicare metriche client-side ai CDN tramite HTTP headers. Questa implementazione permette di aggiornare gli headers dinamicamente per ogni richiesta di chunk video, senza ricaricare la source.
+CMCD (CTA-5004) è uno standard per comunicare metriche client-side ai CDN tramite HTTP headers.
 
-## Architettura
+### API Unificata (React)
 
-```
-┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
-│   JavaScript    │     │    Native Bridge     │     │  Network Layer  │
-│                 │     │                      │     │                 │
-│ player.dynamic  │────▶│ dynamicRequestHeaders│────▶│ OkHttp/URLSess  │
-│ RequestHeaders  │     │ (lettura per-request)│     │ (ogni chunk)    │
-└─────────────────┘     └──────────────────────┘     └─────────────────┘
-```
-
-### Flusso dei dati
-
-1. **JavaScript** aggiorna `player.dynamicRequestHeaders` (es. su ogni `timeUpdate`)
-2. **Native layer** legge questi headers ad ogni richiesta HTTP
-3. **Headers** vengono iniettati in manifest e chunk requests
-
-## Nuove API
-
-### VideoSource
+Da React l'utilizzo è semplice e identico su entrambe le piattaforme:
 
 ```typescript
-const source: VideoSource = {
-  uri: 'https://example.com/video.m3u8',
-  headers: { 'x-cdn-provider': 'akamai' }, // headers statici
-  enableDynamicHeaders: true, // NUOVO: abilita CMCD
-};
-```
+import { useVideoPlayer, formatCmcdHeaders } from 'expo-video';
 
-### VideoPlayer
-
-```typescript
-// Aggiornare headers dinamicamente
-player.dynamicRequestHeaders = {
-  'CMCD-Request': 'bl=2000',
-  'CMCD-Session': 'sid="abc123",sf=h,st=v',
-};
-```
-
-## Modifiche ai File
-
-### TypeScript
-
-#### `src/VideoPlayer.types.ts`
-
-**Aggiunte:**
-
-```typescript
-// In VideoPlayer class
-dynamicRequestHeaders: Record<string, string>;
-
-// In VideoSource type
-enableDynamicHeaders?: boolean;
-```
-
----
-
-### Android
-
-#### `android/src/main/java/expo/modules/video/utils/DynamicHeaderInterceptor.kt` (NUOVO)
-
-OkHttp Interceptor che inietta headers dinamici in ogni richiesta HTTP.
-
-```kotlin
-interface DynamicHeaderProvider {
-  fun getDynamicHeaders(): Map<String, String>
-}
-
-class DynamicHeaderInterceptor(
-  private val headerProviderRef: WeakReference<DynamicHeaderProvider>
-) : Interceptor {
-  override fun intercept(chain: Interceptor.Chain): Response {
-    val headers = headerProviderRef.get()?.getDynamicHeaders() ?: emptyMap()
-    // ... inject headers
-  }
-}
-```
-
-#### `android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt`
-
-**Modifiche:**
-
-- `buildBaseDataSourceFactory()` - aggiunto parametro `dynamicHeaderProvider`
-- `buildOkHttpDataSourceFactory()` - aggiunge interceptor quando `enableDynamicHeaders=true`
-- `buildCacheDataSourceFactory()` - passa provider attraverso la chain
-- `buildExpoVideoMediaSource()` - passa provider attraverso la chain
-
-#### `android/src/main/java/expo/modules/video/records/VideoSource.kt`
-
-**Aggiunte:**
-
-```kotlin
-@Field var enableDynamicHeaders: Boolean = false
-
-fun toMediaSource(context: Context, dynamicHeaderProvider: DynamicHeaderProvider? = null)
-```
-
-#### `android/src/main/java/expo/modules/video/player/VideoPlayer.kt`
-
-**Aggiunte:**
-
-```kotlin
-class VideoPlayer(...) : ..., DynamicHeaderProvider {
-
-  // Thread-safe storage
-  private val _dynamicRequestHeaders = AtomicReference<Map<String, String>>(emptyMap())
-
-  var dynamicRequestHeaders: Map<String, String>
-    get() = _dynamicRequestHeaders.get()
-    set(value) = _dynamicRequestHeaders.set(value)
-
-  // DynamicHeaderProvider implementation
-  override fun getDynamicHeaders(): Map<String, String> = dynamicRequestHeaders
-}
-```
-
-**Modifiche:**
-
-- `prepare()` - passa `this` come DynamicHeaderProvider a `toMediaSource()`
-
-#### `android/src/main/java/expo/modules/video/VideoModule.kt`
-
-**Aggiunte:**
-
-```kotlin
-Property("dynamicRequestHeaders")
-  .get { ref: VideoPlayer -> ref.dynamicRequestHeaders }
-  .set { ref: VideoPlayer, headers: Map<String, String>? ->
-    ref.dynamicRequestHeaders = headers ?: emptyMap()
-  }
-```
-
----
-
-### iOS
-
-#### `ios/Records/VideoSource.swift`
-
-**Aggiunte:**
-
-```swift
-@Field
-var enableDynamicHeaders: Bool = false
-```
-
-#### `ios/Cache/ResourceLoaderDelegate.swift`
-
-**Aggiunte:**
-
-```swift
-internal var dynamicHeadersProvider: (() -> [String: String]?)?
-
-init(..., dynamicHeadersProvider: (() -> [String: String]?)? = nil)
-
-// HLS manifest URL rewriting
-private func isHlsManifest(mimeType: String?) -> Bool
-private func rewriteHlsManifest(data: Data, baseUrl: URL) -> Data
-private func rewriteUrl(_ urlString: String, baseUrl: URL, customScheme: String) -> String?
-private func getOriginalUrl(from loadingRequest: AVAssetResourceLoadingRequest) -> URL?
-```
-
-**Modifiche:**
-
-- `createUrlRequest(for:)` - accetta URL parametro, inietta headers dinamici
-- `processLoadingRequest()` - estrae URL reale dalla loadingRequest per HLS segments
-- `urlSession(_:dataTask:didReceive:)` - riscrive URL nei manifest HLS
-- `attemptToRespondFromCache()` - usa `getOriginalUrl()` per URL corretti
-
-```swift
-private func createUrlRequest(for requestUrl: URL) -> URLRequest {
-  var request = URLRequest(url: requestUrl, cachePolicy: .useProtocolCachePolicy)
-
-  // Static headers
-  self.urlRequestHeaders?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-
-  // Dynamic headers (CMCD)
-  if let dynamicHeaders = dynamicHeadersProvider?() {
-    dynamicHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-  }
-
-  return request
-}
-
-// Nel didReceive data:
-if isHlsManifest(mimeType: response.mimeType) {
-    subdata = rewriteHlsManifest(data: subdata, baseUrl: requestUrl)
-}
-```
-
-#### `ios/VideoAsset.swift`
-
-**Aggiunte:**
-
-```swift
-private let usesDynamicHeaders: Bool
-internal weak var dynamicHeaderProvider: VideoPlayer?
-```
-
-**Modifiche:**
-
-- `init()` - usa ResourceLoaderDelegate quando `enableDynamicHeaders=true` (anche senza caching)
-- Passa closure per headers dinamici a ResourceLoaderDelegate
-
-#### `ios/VideoPlayer.swift`
-
-**Aggiunte:**
-
-```swift
-// Thread-safe storage
-private let dynamicHeadersLock = NSLock()
-private var _dynamicRequestHeaders: [String: String] = [:]
-
-var dynamicRequestHeaders: [String: String] {
-  get {
-    dynamicHeadersLock.lock()
-    defer { dynamicHeadersLock.unlock() }
-    return _dynamicRequestHeaders
-  }
-  set {
-    dynamicHeadersLock.lock()
-    defer { dynamicHeadersLock.unlock() }
-    _dynamicRequestHeaders = newValue
-  }
-}
-```
-
-**Modifiche:**
-
-- `replaceCurrentItem(sync)` - passa `self` a VideoPlayerItem
-- `replaceCurrentItem(async)` - passa `self` a videoSourceLoader.load()
-
-#### `ios/VideoPlayerItem.swift`
-
-**Modifiche:**
-
-- `init(videoSource:videoPlayer:)` - accetta VideoPlayer, lo passa a VideoAsset
-- `init(videoSource:urlOverride:videoPlayer:)` - stesso
-
-#### `ios/VideoSourceLoader.swift`
-
-**Modifiche:**
-
-- `load(videoSource:videoPlayer:)` - accetta e passa VideoPlayer
-- `loadImpl(videoSource:videoPlayer:)` - passa a VideoPlayerItem
-
-#### `ios/VideoModule.swift`
-
-**Aggiunte:**
-
-```swift
-Property("dynamicRequestHeaders") { player -> [String: String] in
-  return player.dynamicRequestHeaders
-}
-.set { player, headers in
-  player.dynamicRequestHeaders = headers
-}
-```
-
----
-
-## Thread Safety
-
-### Android
-- `AtomicReference<Map<String, String>>` per accesso thread-safe
-- `WeakReference` nel DynamicHeaderInterceptor per evitare memory leaks
-
-### iOS
-- `NSLock` per sincronizzare accesso alla property
-- `weak var` per riferimento a VideoPlayer in VideoAsset
-
----
-
-## HLS Manifest URL Rewriting (iOS)
-
-Per far funzionare gli headers dinamici con HLS su iOS, è necessario riscrivere gli URL nei manifest.
-
-### Problema
-
-`AVAssetResourceLoaderDelegate` intercetta solo le richieste con lo scheme custom (`expoVideoCache://`):
-
-```
-expoVideoCache://cdn.com/master.m3u8  ◄── Intercettato!
-  │
-  └── Contenuto manifest:
-        #EXTINF:10.0
-        https://cdn.com/segment1.ts  ◄── NON intercettato (scheme diverso)
-        https://cdn.com/segment2.ts  ◄── NON intercettato
-```
-
-### Soluzione
-
-Il `ResourceLoaderDelegate` riscrive automaticamente gli URL nei manifest HLS:
-
-```swift
-// Quando riceviamo un manifest:
-func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-    if isHlsManifest(mimeType: response.mimeType) {
-        // Riscrive tutti gli URL per usare il nostro scheme custom
-        subdata = rewriteHlsManifest(data: subdata, baseUrl: requestUrl)
-    }
-}
-```
-
-**Risultato:**
-
-```
-expoVideoCache://cdn.com/master.m3u8  ◄── Intercettato
-  │
-  └── Contenuto riscritto:
-        #EXTINF:10.0
-        expoVideoCache://cdn.com/segment1.ts  ◄── Intercettato!
-        expoVideoCache://cdn.com/segment2.ts  ◄── Intercettato!
-```
-
-### Dettagli implementazione
-
-La funzione `rewriteHlsManifest`:
-1. Rileva manifest HLS tramite MIME type (`application/vnd.apple.mpegurl`, etc.)
-2. Parsa tutte le righe del manifest
-3. Riscrive URL assoluti (`https://...`) → `expoVideoCache://...`
-4. Riscrive URL relativi risolvendoli rispetto al base URL
-5. Gestisce anche attributi `URI="..."` in tag come `#EXT-X-KEY`, `#EXT-X-MAP`
-
----
-
-## Limitazioni Note
-
-1. **iOS senza cache**: Quando `enableDynamicHeaders=true`, viene forzato l'uso di `ResourceLoaderDelegate` anche senza caching. Questo è necessario perché `AVURLAssetHTTPHeaderFieldsKey` non supporta headers dinamici.
-
-2. **HLS Only (iOS)**: Su iOS, gli headers dinamici funzionano solo con contenuti HLS. Per MP4 o altri formati single-file, gli headers dinamici non saranno applicati.
-
-3. **Performance**: Gli headers vengono letti ad ogni richiesta chunk. L'uso di `AtomicReference`/`NSLock` minimizza l'overhead.
-
-4. **Manifest rewriting**: Il rewriting dei manifest HLS aggiunge un piccolo overhead alla prima risposta, ma è necessario per intercettare tutte le richieste successive.
-
----
-
-## Esempio di Utilizzo
-
-```typescript
-import { useVideoPlayer, VideoView } from 'expo-video';
-import { formatCmcdHeaders, generateSessionId } from 'app/utils/cmcd';
-
-const sessionId = generateSessionId();
-
+// 1. Crea player con enableDynamicHeaders
 const player = useVideoPlayer({
-  uri: 'https://example.com/video.m3u8',
-  enableDynamicHeaders: true,
+  uri: videoUrl,
+  enableDynamicHeaders: true,  // ← Attiva CMCD
 });
 
-// Aggiornare CMCD headers su ogni timeUpdate
+// 2. Aggiorna headers dinamicamente
+player.dynamicRequestHeaders = formatCmcdHeaders({
+  bl: bufferLengthMs,
+  sid: sessionId,
+  cid: contentId,
+  sf: 'h',  // HLS
+  st: 'v',  // VOD
+});
+```
+
+### Implementazione Nativa
+
+Il layer nativo gestisce tutto automaticamente:
+
+| Piattaforma | Implementazione |
+|-------------|-----------------|
+| **iOS** | Proxy HTTP locale (Network.framework) - avviato automaticamente |
+| **Android** | OkHttp Interceptor |
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                    React (API Unificata)                      │
+│  enableDynamicHeaders: true + player.dynamicRequestHeaders    │
+├───────────────────────────────────────────────────────────────┤
+│         iOS                    │         Android              │
+├────────────────────────────────┼──────────────────────────────┤
+│  VideoPlayer rileva            │  VideoPlayer rileva          │
+│  enableDynamicHeaders=true     │  enableDynamicHeaders=true   │
+│           ↓                    │           ↓                  │
+│  Avvia CMCDProxy auto          │  Attiva OkHttp Interceptor   │
+│  Trasforma URL → proxy URL     │           ↓                  │
+│           ↓                    │  Interceptor legge           │
+│  Proxy legge                   │  dynamicRequestHeaders       │
+│  dynamicRequestHeaders         │  e inietta headers           │
+│  e inietta headers             │                              │
+└────────────────────────────────┴──────────────────────────────┘
+```
+
+---
+
+## Compatibilità
+
+| Caratteristica | iOS | Android |
+|---------------|-----|---------|
+| **HLS** | ✅ | ✅ |
+| **DASH** | ✅ | ✅ |
+| **DRM (FairPlay/Nagra)** | ✅ | ✅ |
+| **Token Auth (Akamai)** | ✅ | ✅ |
+| **Live Streaming** | ✅ | ✅ |
+
+---
+
+## Approccio 1: CMCD Proxy (Consigliato)
+
+### Architettura
+
+```
+┌─────────────┐     ┌──────────────────────┐     ┌─────────────┐
+│   Player    │────▶│   localhost:PORT     │────▶│     CDN     │
+│  (AVPlayer/ │     │   /proxy?url=...     │     │             │
+│  ExoPlayer) │     │   + CMCD Headers     │     │             │
+└─────────────┘     └──────────────────────┘     └─────────────┘
+```
+
+Il proxy:
+1. Avvia un server HTTP locale su porta random
+2. Intercetta tutte le richieste video
+3. Aggiunge headers CMCD dinamici
+4. Riscrive URL nei manifest HLS per usare il proxy
+5. Inoltra al CDN originale
+
+### Utilizzo
+
+```typescript
+import {
+  useVideoPlayer,
+  VideoView,
+  CMCDProxy,
+  formatCmcdHeaders,
+  generateSessionId
+} from 'expo-video';
+
+// 1. Avvia il proxy
+await CMCDProxy.start();
+console.log('Proxy running on port:', CMCDProxy.getPort());
+
+// 2. Crea URL proxy per il video
+const originalUrl = 'https://cdn.example.com/video.m3u8';
+const proxyUrl = CMCDProxy.createProxyUrl(originalUrl);
+
+// 3. Usa il player con URL proxy
+const player = useVideoPlayer({ uri: proxyUrl });
+
+// 4. Genera session ID stabile
+const sessionId = generateSessionId();
+
+// 5. Aggiorna headers CMCD dinamicamente
 player.addListener('timeUpdate', (event) => {
   const bufferLength = (player.bufferedPosition - player.currentTime) * 1000;
 
@@ -365,29 +124,295 @@ player.addListener('timeUpdate', (event) => {
     sid: sessionId,
     cid: 'content-123',
     sf: 'h', // HLS
-    st: 'v', // VOD
+    st: 'v', // VOD (o 'l' per live)
     v: 1,
   });
 });
+
+// 6. Ferma il proxy quando non serve più
+CMCDProxy.stop();
+```
+
+### API Reference
+
+#### CMCDProxy
+
+```typescript
+// Avvia il proxy
+await CMCDProxy.start(): Promise<void>;
+
+// Ferma il proxy
+CMCDProxy.stop(): void;
+
+// Stato del proxy
+CMCDProxy.isRunning(): boolean;
+CMCDProxy.getPort(): number;
+CMCDProxy.getBaseUrl(): string | null;
+
+// URL helpers
+CMCDProxy.createProxyUrl(originalUrl: string): string | null;
+CMCDProxy.extractOriginalUrl(proxyUrl: string): string | null;
+
+// Headers statici (es. authorization)
+CMCDProxy.setStaticHeaders(headers: Record<string, string>): void;
+```
+
+#### formatCmcdHeaders
+
+```typescript
+interface CmcdData {
+  // CMCD-Request
+  bl?: number;   // Buffer length (ms)
+  mtp?: number;  // Measured throughput (kbps)
+  dl?: number;   // Deadline (ms)
+
+  // CMCD-Object
+  br?: number;   // Encoded bitrate (kbps)
+  d?: number;    // Object duration (ms)
+  ot?: 'v' | 'a' | 'm' | 'i' | 'c' | 'tt' | 'k' | 'o';
+  tb?: number;   // Top bitrate (kbps)
+
+  // CMCD-Session
+  sid?: string;  // Session ID
+  cid?: string;  // Content ID
+  sf?: 'd' | 'h' | 's' | 'o';  // Stream format
+  st?: 'v' | 'l';              // Stream type
+  v?: number;    // CMCD version
+
+  // CMCD-Status
+  bs?: boolean;  // Buffer starvation
+  rtp?: number;  // Requested max throughput
+  su?: boolean;  // Startup
+}
+
+formatCmcdHeaders(data: CmcdData): Record<string, string>;
+```
+
+### File Implementati (Proxy)
+
+#### iOS
+
+- `ios/Proxy/CMCDProxy.swift` - Server HTTP locale usando Network.framework (NWListener)
+- `ios/Proxy/CMCDProxyManager.swift` - Singleton manager
+
+**CMCDProxy.swift** implementa:
+- Server TCP con `NWListener`
+- Parsing richieste HTTP
+- Proxy con `URLSession`
+- HLS manifest URL rewriting
+- Injection headers CMCD
+
+#### Android
+
+- `android/.../proxy/CMCDProxy.kt` - Server HTTP locale con ServerSocket + OkHttp
+- `android/.../proxy/CMCDProxyManager.kt` - Singleton manager
+
+**CMCDProxy.kt** implementa:
+- Server TCP con `ServerSocket`
+- Thread pool per connessioni concorrenti
+- Proxy con `OkHttpClient`
+- HLS manifest URL rewriting
+- Injection headers CMCD
+
+#### TypeScript
+
+- `src/CMCDProxy.ts` - API TypeScript, helper `formatCmcdHeaders`, `generateSessionId`
+
+#### VideoModule
+
+Funzioni esposte:
+- `startCMCDProxy()` - Avvia proxy
+- `stopCMCDProxy()` - Ferma proxy
+- `isCMCDProxyRunning()` - Stato
+- `getCMCDProxyPort()` - Porta
+- `getCMCDProxyBaseUrl()` - Base URL
+- `createCMCDProxyUrl(url)` - Crea URL proxy
+- `extractCMCDOriginalUrl(url)` - Estrae URL originale
+- `setCMCDProxyStaticHeaders(headers)` - Headers statici
+
+---
+
+## Approccio 2: OkHttp Interceptor (Solo Android)
+
+Questo approccio usa un OkHttp Interceptor per iniettare headers dinamici direttamente nelle richieste HTTP. Funziona solo su Android.
+
+> **Nota**: Su iOS usa esclusivamente il Proxy approach. L'implementazione ResourceLoaderDelegate è stata rimossa per incompatibilità con DASH e DRM.
+
+### Utilizzo (Android)
+
+```typescript
+const player = useVideoPlayer({
+  uri: 'https://example.com/video.m3u8',
+  enableDynamicHeaders: true, // Abilita OkHttp Interceptor (solo Android)
+});
+
+// Aggiorna headers dinamicamente
+player.dynamicRequestHeaders = {
+  'CMCD-Request': 'bl=2000',
+  'CMCD-Session': 'sid="abc123"',
+};
+```
+
+### Come Funziona (Android)
+
+1. `VideoSource` con `enableDynamicHeaders: true` attiva l'interceptor
+2. `DynamicHeaderInterceptor` intercetta ogni richiesta HTTP
+3. Legge `dynamicRequestHeaders` dal `VideoPlayer` tramite `DynamicHeaderProvider`
+4. Aggiunge gli headers alla richiesta
+5. Inoltra al CDN originale
+
+### File Implementati (OkHttp Interceptor)
+
+#### TypeScript
+- `src/VideoPlayer.types.ts` - `enableDynamicHeaders`, `dynamicRequestHeaders`
+
+#### Android
+- `android/.../utils/DynamicHeaderInterceptor.kt` - OkHttp Interceptor
+- `android/.../utils/DataSourceUtils.kt` - Integrazione interceptor
+- `android/.../records/VideoSource.kt` - Campo `enableDynamicHeaders`
+- `android/.../player/VideoPlayer.kt` - Proprietà `dynamicRequestHeaders`
+
+---
+
+## Thread Safety
+
+### Proxy
+- **iOS**: `DispatchQueue` dedicata per il server, `connectionsLock` per array connessioni
+- **Android**: `ExecutorService` con thread pool, `AtomicReference` per headers
+
+### dynamicRequestHeaders
+- **iOS**: `NSLock` per sincronizzazione lettura/scrittura
+- **Android**: `AtomicReference<Map>` per accesso atomico
+
+### Memory Management
+- `WeakReference` usato ovunque per evitare memory leaks quando il player viene distrutto
+
+---
+
+## Esempio Completo con Proxy
+
+```typescript
+import { useEffect, useRef } from 'react';
+import {
+  useVideoPlayer,
+  VideoView,
+  CMCDProxy,
+  formatCmcdHeaders,
+  generateSessionId
+} from 'expo-video';
+import { useEventListener } from 'expo';
+
+export function VideoPlayerWithCMCD({ videoUrl }: { videoUrl: string }) {
+  const sessionId = useRef(generateSessionId());
+  const proxyStarted = useRef(false);
+
+  // Avvia proxy al mount
+  useEffect(() => {
+    const startProxy = async () => {
+      if (!CMCDProxy.isRunning()) {
+        await CMCDProxy.start();
+        proxyStarted.current = true;
+      }
+    };
+    startProxy();
+
+    return () => {
+      if (proxyStarted.current) {
+        CMCDProxy.stop();
+      }
+    };
+  }, []);
+
+  // Crea URL proxy
+  const proxyUrl = CMCDProxy.isRunning()
+    ? CMCDProxy.createProxyUrl(videoUrl)
+    : null;
+
+  // Crea player
+  const player = useVideoPlayer(
+    proxyUrl ? { uri: proxyUrl } : null
+  );
+
+  // Aggiorna CMCD headers
+  useEventListener(player, 'timeUpdate', (event) => {
+    if (!player) return;
+
+    const bufferMs = Math.max(0,
+      (player.bufferedPosition - event.currentTime) * 1000
+    );
+
+    player.dynamicRequestHeaders = formatCmcdHeaders({
+      bl: bufferMs,
+      sid: sessionId.current,
+      cid: videoUrl,
+      sf: 'h',
+      st: player.isLive ? 'l' : 'v',
+      v: 1,
+    });
+  });
+
+  if (!player) return null;
+
+  return <VideoView player={player} style={{ flex: 1 }} />;
+}
 ```
 
 ---
 
-## Test
+## Test e Verifica
 
 ### Con Charles Proxy
 
-1. Avviare Charles Proxy
-2. Configurare proxy sul device/simulatore
-3. Riprodurre video con `enableDynamicHeaders: true`
-4. Verificare nelle richieste chunk:
+1. Avvia Charles Proxy
+2. Configura proxy sul device/simulatore
+3. Riproduci video con CMCD
+4. Verifica headers nelle richieste:
    - `CMCD-Request: bl=...` (cambia tra richieste)
-   - `CMCD-Session: sid=...,cid=...,sf=h,st=v,v=1`
+   - `CMCD-Session: sid=...,cid=...,sf=h,st=v`
 
-### Verifiche
+### Checklist
 
-- [ ] Headers presenti nelle richieste manifest
-- [ ] Headers presenti nelle richieste chunk
+- [ ] Proxy si avvia correttamente
+- [ ] URL proxy generato correttamente
+- [ ] Video riproduce tramite proxy
+- [ ] Headers CMCD presenti nelle richieste manifest
+- [ ] Headers CMCD presenti nelle richieste chunk
 - [ ] `bl` (buffer length) cambia dinamicamente
 - [ ] `sid` (session ID) rimane costante per sessione
-- [ ] Nessun memory leak dopo stop/replace source
+- [ ] Manifest HLS riscritti correttamente (URL proxy)
+- [ ] Live streaming funziona (manifest refresh)
+- [ ] Nessun memory leak dopo stop/replace
+- [ ] Proxy si ferma correttamente
+
+---
+
+## Changelog
+
+### v3.0.15-cmcd.4
+- **API Unificata**: `enableDynamicHeaders: true` funziona identico su iOS e Android
+- **iOS**: Proxy avviato automaticamente dal layer nativo quando `enableDynamicHeaders=true`
+- Non serve più gestire il proxy da React/TypeScript su iOS
+- `VideoPlayer.swift` processa automaticamente la source e trasforma l'URL
+- Documentazione aggiornata con nuova architettura
+
+### v3.0.15-cmcd.3
+- **BREAKING (iOS)**: Rimosso approccio ResourceLoaderDelegate per iOS
+- iOS usa ora esclusivamente il Proxy approach
+- Rimosso HLS URL rewriting da `ResourceLoaderDelegate.swift`
+- Rimosso `dynamicHeadersProvider` e `dynamicHeaderProvider` da iOS
+- Pulito `VideoAsset.swift`, `VideoPlayerItem.swift`, `VideoSourceLoader.swift`
+- Android mantiene supporto OkHttp Interceptor con `enableDynamicHeaders`
+
+### v3.0.15-cmcd.2
+- **NEW**: Aggiunto approccio Proxy per supporto universale
+- Proxy supporta HLS, DASH, DRM
+- API `CMCDProxy` con start/stop/createProxyUrl
+- Helper `formatCmcdHeaders` e `generateSessionId` esportati da expo-video
+- Server HTTP nativo su iOS (Network.framework) e Android (ServerSocket)
+
+### v3.0.15-cmcd.1
+- Implementazione iniziale con ResourceLoaderDelegate (iOS) e OkHttp Interceptor (Android)
+- Supporto HLS con URL rewriting (iOS)
+- OkHttp Interceptor per Android
+- Proprietà `dynamicRequestHeaders` su VideoPlayer
+- Campo `enableDynamicHeaders` su VideoSource

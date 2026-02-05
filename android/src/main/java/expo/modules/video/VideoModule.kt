@@ -360,6 +360,40 @@ class VideoModule : Module() {
     OnActivityEntersBackground {
       VideoManager.onAppBackgrounded()
     }
+
+    // MARK: - CMCD Proxy Functions
+
+    AsyncFunction("startCMCDProxy") {
+      expo.modules.video.proxy.CMCDProxyManager.start()
+    }
+
+    Function("stopCMCDProxy") {
+      expo.modules.video.proxy.CMCDProxyManager.stop()
+    }
+
+    Function("isCMCDProxyRunning") {
+      expo.modules.video.proxy.CMCDProxyManager.isRunning
+    }
+
+    Function("getCMCDProxyPort") {
+      expo.modules.video.proxy.CMCDProxyManager.port
+    }
+
+    Function("getCMCDProxyBaseUrl") {
+      expo.modules.video.proxy.CMCDProxyManager.baseUrl
+    }
+
+    Function("createCMCDProxyUrl") { originalUrl: String ->
+      expo.modules.video.proxy.CMCDProxyManager.createProxyUrl(originalUrl)
+    }
+
+    Function("extractCMCDOriginalUrl") { proxyUrl: String ->
+      expo.modules.video.proxy.CMCDProxyManager.extractOriginalUrl(proxyUrl)
+    }
+
+    Function("setCMCDProxyStaticHeaders") { headers: Map<String, String> ->
+      expo.modules.video.proxy.CMCDProxyManager.setStaticHeaders(headers)
+    }
   }
   private fun replaceImpl(
     ref: VideoPlayer,
