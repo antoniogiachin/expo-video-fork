@@ -361,12 +361,18 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
   }
 
   fun prepare() {
+    android.util.Log.e("EXPO_VIDEO_TEST", "=== VideoPlayer.prepare() CALLED ===")
     availableVideoTracks = listOf()
     currentVideoTrack = null
 
     val newSource = uncommittedSource
+    android.util.Log.e("EXPO_VIDEO_TEST", "uncommittedSource is null: ${newSource == null}")
+    android.util.Log.e("EXPO_VIDEO_TEST", "uncommittedSource uri: ${newSource?.uri}")
+    android.util.Log.e("EXPO_VIDEO_TEST", "uncommittedSource enableDynamicHeaders: ${newSource?.enableDynamicHeaders}")
+
     // Pass this as DynamicHeaderProvider for CMCD support
     val mediaSource = newSource?.toMediaSource(context, this)
+    android.util.Log.e("EXPO_VIDEO_TEST", "mediaSource is null: ${mediaSource == null}")
 
     mediaSource?.let {
       player.setMediaSource(it)
