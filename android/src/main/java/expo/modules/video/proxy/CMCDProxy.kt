@@ -275,7 +275,7 @@ internal class CMCDProxy {
     }
   }
 
-  private fun sendResponse(client: Socket, statusCode: Int, headers: Map<String, List<String>>, body: ByteArray) {
+  private fun sendResponse(client: Socket, statusCode: Int, headers: Map<String, String>, body: ByteArray) {
     try {
       val output = client.getOutputStream()
       val statusMessage = httpStatusMessage(statusCode)
@@ -285,14 +285,12 @@ internal class CMCDProxy {
       headerBuilder.append("Access-Control-Allow-Origin: *\r\n")
 
       // Forward relevant headers, skip problematic ones
-      for ((key, values) in headers) {
+      for ((key, value) in headers) {
         val lowerKey = key.lowercase()
         if (lowerKey == "content-encoding" || lowerKey == "transfer-encoding" || lowerKey == "content-length") {
           continue
         }
-        for (value in values) {
-          headerBuilder.append("$key: $value\r\n")
-        }
+        headerBuilder.append("$key: $value\r\n")
       }
 
       headerBuilder.append("Content-Length: ${body.size}\r\n")

@@ -14,7 +14,7 @@ internal final class CMCDProxy {
   private let headersLock = NSLock()
 
   private var readyContinuation: CheckedContinuation<Void, Error>?
-  private var activeConnections: Set<NWConnection> = []
+  private var activeConnections: [NWConnection] = []
   private let connectionsLock = NSLock()
 
   /// Provider for dynamic headers - typically set by the VideoPlayer
@@ -116,7 +116,7 @@ internal final class CMCDProxy {
 
   private func handleConnection(_ connection: NWConnection) {
     connectionsLock.lock()
-    activeConnections.insert(connection)
+    activeConnections.append(connection)
     connectionsLock.unlock()
 
     connection.stateUpdateHandler = { [weak self, weak connection] state in
@@ -136,7 +136,7 @@ internal final class CMCDProxy {
 
   private func removeConnection(_ connection: NWConnection) {
     connectionsLock.lock()
-    activeConnections.remove(connection)
+    activeConnections.removeAll { $0 === connection }
     connectionsLock.unlock()
   }
 
