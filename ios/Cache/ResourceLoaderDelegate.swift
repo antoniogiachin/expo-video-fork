@@ -182,15 +182,18 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     request?.loadingRequest.contentInformationRequest?.contentLength = response.expectedContentLength
     request?.loadingRequest.contentInformationRequest?.isByteRangeAccessSupported = true
 
-    if let mimeType = response.mimeType, isSupported(mimeType: mimeType) {
+    // Always set content type for proper playback (including HLS manifests)
+    if let mimeType = response.mimeType {
       let rawUti = UTType(mimeType: mimeType)?.identifier
       request?.loadingRequest.contentInformationRequest?.contentType = rawUti ?? response.mimeType
-      cachedResource.onResponseReceived(response: response)
-    } else {
-      // We can't control the AVPlayer.error property that will be set after the player fails to load the resource
-      // We have an additional field that can be used to return a more specific error
-      onError?(VideoCacheUnsupportedFormatException(response.mimeType ?? ""))
     }
+
+    // Only cache video/audio segments, not manifests
+    if let mimeType = response.mimeType, isCacheable(mimeType: mimeType) {
+      cachedResource.onResponseReceived(response: response)
+    }
+    // Note: We don't throw error for non-cacheable types (like HLS manifests)
+    // as they can still be played, just not cached
   }
 
   /// Attempts to load the request from cache, if just the beginning of the requested data  is available, returns a URL request to fetch the rest of the data
@@ -256,8 +259,12 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     urlRequest.setValue("bytes=\(requestedOffset)-\(requestedOffset + requestedLength - 1)", forHTTPHeaderField: "Range")
   }
 
-  private func isSupported(mimeType: String?) -> Bool {
-    return mimeType?.starts(with: "video/") ?? false
+  /// Determines if a MIME type should be cached.
+  /// Only video/audio segments are cached, not manifests or other metadata.
+  private func isCacheable(mimeType: String?) -> Bool {
+    guard let mimeType = mimeType else { return false }
+    // Only cache actual media segments (video/audio), not manifests
+    return mimeType.starts(with: "video/") || mimeType.starts(with: "audio/")
   }
 
   private func createUrlRequest() -> URLRequest {
