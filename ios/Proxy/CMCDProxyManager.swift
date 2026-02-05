@@ -62,7 +62,7 @@ final class CMCDProxyManager {
 
     // Set headers provider
     newProxy.cmcdHeadersProvider = { [weak self] in
-      return self?.headersProvider?()
+      return self?.headersProvider?() ?? [:]
     }
 
     try newProxy.start()
