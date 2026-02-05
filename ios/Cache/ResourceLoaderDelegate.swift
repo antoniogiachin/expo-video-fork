@@ -187,7 +187,7 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     if let mimeType = response.mimeType, isSupported(mimeType: mimeType) {
       cachedResource.onResponseReceived(response: response)
     } else {
-      onError?(VideoCacheUnsupportedFormatException())
+      onError?(VideoCacheUnsupportedFormatException(response.mimeType ?? "unknown"))
     }
   }
 
