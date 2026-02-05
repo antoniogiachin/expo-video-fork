@@ -17,7 +17,6 @@ import expo.modules.kotlin.records.Record
 import expo.modules.video.UnsupportedDRMTypeException
 import expo.modules.video.buildExpoVideoMediaSource
 import expo.modules.video.enums.ContentType
-import expo.modules.video.utils.DynamicHeaderProvider
 import java.io.Serializable
 
 @OptIn(UnstableApi::class)
@@ -44,9 +43,9 @@ class VideoSource(
       "ContentType:${this.contentType.value}"
   }
 
-  fun toMediaSource(context: Context, dynamicHeaderProvider: DynamicHeaderProvider? = null): MediaSource? {
+  fun toMediaSource(context: Context): MediaSource? {
     this.uri ?: return null
-    return buildExpoVideoMediaSource(context, this, dynamicHeaderProvider)
+    return buildExpoVideoMediaSource(context, this)
   }
 
   fun toMediaItem(context: Context) = MediaItem

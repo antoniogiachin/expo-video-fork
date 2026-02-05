@@ -11,6 +11,13 @@ type ExpoVideoModule = {
   setVideoCacheSizeAsync(sizeBytes: number): Promise<void>;
   clearVideoCacheAsync(): Promise<void>;
   getCurrentVideoCacheSize(): number;
+
+  // CMCD Proxy functions
+  startCMCDProxy(): Promise<void>;
+  stopCMCDProxy(): void;
+  isCMCDProxyRunning(): boolean;
+  getCMCDProxyPort(): number;
+  setCMCDProxyStaticHeaders(headers: Record<string, string>): void;
 };
 
 export default requireNativeModule<ExpoVideoModule>('ExpoVideo');

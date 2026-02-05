@@ -7,7 +7,6 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.REPEAT_MODE_ONE
 import androidx.media3.common.util.UnstableApi
-import com.facebook.react.common.annotations.UnstableReactNativeAPI
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.apifeatures.EitherType
 import expo.modules.kotlin.functions.Coroutine
@@ -23,9 +22,13 @@ import expo.modules.video.records.BufferOptions
 import expo.modules.video.records.FullscreenOptions
 import expo.modules.video.records.SubtitleTrack
 import expo.modules.video.records.AudioTrack
+import expo.modules.video.records.ScrubbingModeOptions
+import expo.modules.video.records.SeekTolerance
 import expo.modules.video.records.VideoSource
 import expo.modules.video.records.VideoThumbnailOptions
 import expo.modules.video.utils.runWithPiPMisconfigurationSoftHandling
+import expo.modules.video.managers.VideoManager
+import expo.modules.video.proxy.CMCDProxyManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
@@ -33,7 +36,6 @@ import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration
 
 // https://developer.android.com/guide/topics/media/media3/getting-started/migration-guide#improvements_in_media3
-@UnstableReactNativeAPI
 @androidx.annotation.OptIn(UnstableApi::class)
 class VideoModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -41,6 +43,10 @@ class VideoModule : Module() {
 
     OnCreate {
       VideoManager.onModuleCreated(appContext)
+    }
+
+    OnDestroy {
+      VideoManager.onModuleDestroyed(appContext)
     }
 
     Function("isPictureInPictureSupported") {
@@ -59,6 +65,28 @@ class VideoModule : Module() {
       VideoManager.cache.clear()
     }
 
+    // MARK: - CMCD Proxy Functions
+
+    AsyncFunction("startCMCDProxy") Coroutine { ->
+      CMCDProxyManager.start()
+    }
+
+    Function("stopCMCDProxy") {
+      CMCDProxyManager.stop()
+    }
+
+    Function("isCMCDProxyRunning") {
+      CMCDProxyManager.isRunning
+    }
+
+    Function("getCMCDProxyPort") {
+      CMCDProxyManager.port
+    }
+
+    Function("setCMCDProxyStaticHeaders") { headers: Map<String, String> ->
+      CMCDProxyManager.setStaticHeaders(headers)
+    }
+
     View(SurfaceVideoView::class) {
       VideoViewComponent<SurfaceVideoView>()
     }
@@ -68,11 +96,6 @@ class VideoModule : Module() {
 
     Class(VideoPlayer::class) {
       Constructor { source: VideoSource? ->
-        println("!!! EXPO_VIDEO_TEST: VideoPlayer Constructor CALLED !!!")
-        println("!!! EXPO_VIDEO_TEST: source is null: ${source == null}")
-        println("!!! EXPO_VIDEO_TEST: source uri: ${source?.uri}")
-        println("!!! EXPO_VIDEO_TEST: source enableDynamicHeaders: ${source?.enableDynamicHeaders}")
-
         val player = VideoPlayer(appContext.throwingActivity.applicationContext, appContext, source)
         appContext.mainQueue.launch {
           player.prepare()
@@ -90,9 +113,7 @@ class VideoModule : Module() {
           ref.muted
         }
         .set { ref: VideoPlayer, muted: Boolean ->
-          appContext.mainQueue.launch {
-            ref.muted = muted
-          }
+          ref.muted = muted
         }
 
       Property("volume")
@@ -100,10 +121,8 @@ class VideoModule : Module() {
           ref.volume
         }
         .set { ref: VideoPlayer, volume: Float ->
-          appContext.mainQueue.launch {
-            ref.userVolume = volume
-            ref.volume = volume
-          }
+          ref.userVolume = volume
+          ref.volume = volume
         }
 
       Property("currentTime")
@@ -185,10 +204,8 @@ class VideoModule : Module() {
           ref.playbackParameters.speed
         }
         .set { ref: VideoPlayer, playbackRate: Float ->
-          appContext.mainQueue.launch {
-            val pitch = if (ref.preservesPitch) 1f else playbackRate
-            ref.playbackParameters = PlaybackParameters(playbackRate, pitch)
-          }
+          val pitch = if (ref.preservesPitch) 1f else playbackRate
+          ref.playbackParameters = PlaybackParameters(playbackRate, pitch)
         }
 
       Property("isLive")
@@ -201,9 +218,7 @@ class VideoModule : Module() {
           ref.preservesPitch
         }
         .set { ref: VideoPlayer, preservesPitch: Boolean ->
-          appContext.mainQueue.launch {
-            ref.preservesPitch = preservesPitch
-          }
+          ref.preservesPitch = preservesPitch
         }
 
       Property("showNowPlayingNotification")
@@ -211,9 +226,7 @@ class VideoModule : Module() {
           ref.showNowPlayingNotification
         }
         .set { ref: VideoPlayer, showNotification: Boolean ->
-          appContext.mainQueue.launch {
-            ref.showNowPlayingNotification = showNotification
-          }
+          ref.showNowPlayingNotification = showNotification
         }
 
       Property("status")
@@ -292,9 +305,7 @@ class VideoModule : Module() {
           ref.audioMixingMode
         }
         .set { ref: VideoPlayer, audioMixingMode: AudioMixingMode ->
-          appContext.mainQueue.launch {
-            ref.audioMixingMode = audioMixingMode
-          }
+          ref.audioMixingMode = audioMixingMode
         }
 
       Property("keepScreenOnWhilePlaying")
@@ -303,6 +314,22 @@ class VideoModule : Module() {
         }
         .set { ref: VideoPlayer, value: Boolean? ->
           ref.keepScreenOnWhilePlaying = value ?: true
+        }
+
+      Property("seekTolerance")
+        .get { ref: VideoPlayer ->
+          ref.seekTolerance
+        }
+        .set { ref: VideoPlayer, tolerance: SeekTolerance? ->
+          ref.seekTolerance = tolerance ?: SeekTolerance()
+        }
+
+      Property("scrubbingModeOptions")
+        .get { ref: VideoPlayer ->
+          ref.scrubbingModeOptions
+        }
+        .set { ref: VideoPlayer, options: ScrubbingModeOptions? ->
+          ref.scrubbingModeOptions = options ?: ScrubbingModeOptions()
         }
 
       Property("dynamicRequestHeaders")
@@ -365,49 +392,12 @@ class VideoModule : Module() {
     OnActivityEntersBackground {
       VideoManager.onAppBackgrounded()
     }
-
-    // MARK: - CMCD Proxy Functions
-
-    AsyncFunction("startCMCDProxy") {
-      expo.modules.video.proxy.CMCDProxyManager.start()
-    }
-
-    Function("stopCMCDProxy") {
-      expo.modules.video.proxy.CMCDProxyManager.stop()
-    }
-
-    Function("isCMCDProxyRunning") {
-      expo.modules.video.proxy.CMCDProxyManager.isRunning
-    }
-
-    Function("getCMCDProxyPort") {
-      expo.modules.video.proxy.CMCDProxyManager.port
-    }
-
-    Function("getCMCDProxyBaseUrl") {
-      expo.modules.video.proxy.CMCDProxyManager.baseUrl
-    }
-
-    Function("createCMCDProxyUrl") { originalUrl: String ->
-      expo.modules.video.proxy.CMCDProxyManager.createProxyUrl(originalUrl)
-    }
-
-    Function("extractCMCDOriginalUrl") { proxyUrl: String ->
-      expo.modules.video.proxy.CMCDProxyManager.extractOriginalUrl(proxyUrl)
-    }
-
-    Function("setCMCDProxyStaticHeaders") { headers: Map<String, String> ->
-      expo.modules.video.proxy.CMCDProxyManager.setStaticHeaders(headers)
-    }
   }
   private fun replaceImpl(
     ref: VideoPlayer,
     source: Either<Uri, VideoSource>?,
     promise: Promise? = null
   ) {
-    println("!!! EXPO_VIDEO_TEST: replaceImpl CALLED !!!")
-    println("!!! EXPO_VIDEO_TEST: source is null: ${source == null}")
-
     val videoSource = source?.let {
       if (it.`is`(VideoSource::class)) {
         it.get(VideoSource::class)
@@ -415,10 +405,6 @@ class VideoModule : Module() {
         VideoSource(it.get(Uri::class))
       }
     }
-
-    println("!!! EXPO_VIDEO_TEST: videoSource is null: ${videoSource == null}")
-    println("!!! EXPO_VIDEO_TEST: videoSource uri: ${videoSource?.uri}")
-    println("!!! EXPO_VIDEO_TEST: videoSource enableDynamicHeaders: ${videoSource?.enableDynamicHeaders}")
 
     appContext.mainQueue.launch {
       ref.uncommittedSource = videoSource
@@ -437,7 +423,7 @@ private inline fun <reified T : VideoView> ViewDefinitionBuilder<T>.VideoViewCom
     "onFullscreenExit",
     "onFirstFrameRender"
   )
-  Prop("player") { view: T, player: VideoPlayer ->
+  Prop("player") { view: T, player: VideoPlayer? ->
     view.videoPlayer = player
   }
   Prop("nativeControls") { view: T, useNativeControls: Boolean ->
@@ -446,11 +432,8 @@ private inline fun <reified T : VideoView> ViewDefinitionBuilder<T>.VideoViewCom
   Prop("contentFit") { view: T, contentFit: ContentFit ->
     view.contentFit = contentFit
   }
-  Prop("startsPictureInPictureAutomatically") { view: T, autoEnterPiP: Boolean ->
-    view.autoEnterPiP = autoEnterPiP
-  }
-  Prop("allowsFullscreen") { view: T, allowsFullscreen: Boolean? ->
-    view.allowsFullscreen = allowsFullscreen ?: true
+  Prop("startsPictureInPictureAutomatically") { view: T, autoEnterPiP: Boolean? ->
+    view.autoEnterPiP = autoEnterPiP ?: false
   }
   Prop("fullscreenOptions") { view: T, fullscreenOptions: FullscreenOptions? ->
     if (fullscreenOptions != null) {

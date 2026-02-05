@@ -1,401 +1,346 @@
 package expo.modules.video.proxy
 
-import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.io.OutputStream
+import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.lang.ref.WeakReference
 
 /**
- * A lightweight local HTTP proxy server for injecting CMCD headers into video requests.
- * This proxy intercepts requests, adds dynamic CMCD headers, and forwards them to the CDN.
- *
- * Architecture:
- * ```
- * ExoPlayer → localhost:PORT/proxy?url=ENCODED_URL → CMCDProxy → CDN
- *                                                       ↓
- *                                                + CMCD Headers
- * ```
+ * Local HTTP proxy server for injecting dynamic headers into video segment requests.
+ * Uses ServerSocket for TCP handling and OkHttp for upstream requests.
  */
-class CMCDProxy {
-
-  companion object {
-    private const val TAG = "CMCDProxy"
-    private const val BUFFER_SIZE = 8192
-  }
-
-  // MARK: - Properties
-
+internal class CMCDProxy {
   private var serverSocket: ServerSocket? = null
   private var executor: ExecutorService? = null
-  private val running = AtomicBoolean(false)
+  private val _port = AtomicInteger(0)
+  private val isRunning = AtomicBoolean(false)
+  private val readyLatch = CountDownLatch(1)
+
   private val httpClient = OkHttpClient.Builder()
+    .followRedirects(true)
     .connectTimeout(30, TimeUnit.SECONDS)
     .readTimeout(30, TimeUnit.SECONDS)
-    .writeTimeout(30, TimeUnit.SECONDS)
     .build()
 
-  var port: Int = 0
-    private set
-
-  val isRunning: Boolean
-    get() = running.get()
-
-  /** Provider for dynamic CMCD headers - called for each request */
-  private val cmcdHeadersProvider = AtomicReference<(() -> Map<String, String>)?>(null)
-
-  /** Static headers to add to all requests */
-  private val staticHeaders = AtomicReference<Map<String, String>>(emptyMap())
-
-  // MARK: - Lifecycle
+  /**
+   * Provider for dynamic headers - typically set by the VideoPlayer
+   */
+  var dynamicHeadersProvider: WeakReference<(() -> Map<String, String>)>? = null
 
   /**
-   * Starts the proxy server on an available port.
-   * @throws Exception if the server fails to start
+   * Static headers that are always added to proxied requests
    */
-  @Throws(Exception::class)
-  fun start() {
-    if (running.get()) {
-      Log.i(TAG, "Proxy already running on port $port")
-      return
-    }
+  private val _staticHeaders = AtomicReference<Map<String, String>>(emptyMap())
+  var staticHeaders: Map<String, String>
+    get() = _staticHeaders.get()
+    set(value) = _staticHeaders.set(value)
 
-    // Find available port
-    serverSocket = ServerSocket(0).apply {
-      reuseAddress = true
+  val port: Int get() = _port.get()
+
+  val isReady: Boolean get() = _port.get() > 0
+
+  /**
+   * Starts the proxy server in a blocking manner with a timeout.
+   * @param timeoutMs Maximum time to wait for the server to be ready
+   * @return true if the server started successfully
+   */
+  fun startBlocking(timeoutMs: Long = 5000): Boolean {
+    if (_port.get() > 0 && isRunning.get()) {
+      return true
     }
-    port = serverSocket!!.localPort
 
     executor = Executors.newCachedThreadPool()
-    running.set(true)
-
-    // Start accepting connections
     executor?.submit {
-      acceptConnections()
+      try {
+        serverSocket = ServerSocket(0).also {
+          _port.set(it.localPort)
+          isRunning.set(true)
+          readyLatch.countDown()
+        }
+        acceptConnections()
+      } catch (e: Exception) {
+        println("[CMCDProxy] Failed to start server: ${e.message}")
+        readyLatch.countDown()
+      }
     }
 
-    Log.i(TAG, "Started on port $port")
+    return readyLatch.await(timeoutMs, TimeUnit.MILLISECONDS) && _port.get() > 0
   }
 
   /**
-   * Stops the proxy server.
+   * Stops the proxy server and closes all connections.
    */
   fun stop() {
-    running.set(false)
-
+    isRunning.set(false)
     try {
       serverSocket?.close()
     } catch (e: Exception) {
-      Log.e(TAG, "Error closing server socket", e)
+      // Ignore
     }
-
-    executor?.shutdown()
-    try {
-      executor?.awaitTermination(5, TimeUnit.SECONDS)
-    } catch (e: InterruptedException) {
-      executor?.shutdownNow()
-    }
-
+    executor?.shutdownNow()
     serverSocket = null
     executor = null
-    port = 0
-
-    Log.i(TAG, "Stopped")
+    _port.set(0)
   }
 
   /**
-   * Sets the CMCD headers provider closure.
+   * Creates a proxy URL for the given original URL.
    */
-  fun setCmcdHeadersProvider(provider: () -> Map<String, String>) {
-    cmcdHeadersProvider.set(provider)
+  fun createProxyUrl(originalUrl: String): String? {
+    val currentPort = _port.get()
+    if (currentPort == 0) return null
+    val encoded = URLEncoder.encode(originalUrl, "UTF-8")
+    return "http://127.0.0.1:$currentPort/proxy?url=$encoded"
   }
-
-  /**
-   * Sets static headers to add to all requests.
-   */
-  fun setStaticHeaders(headers: Map<String, String>) {
-    staticHeaders.set(headers)
-  }
-
-  // MARK: - Connection Handling
 
   private fun acceptConnections() {
-    while (running.get()) {
+    while (isRunning.get() && serverSocket?.isClosed == false) {
       try {
-        val socket = serverSocket?.accept() ?: break
-        executor?.submit { handleConnection(socket) }
+        val client = serverSocket?.accept() ?: break
+        executor?.submit { handleClient(client) }
       } catch (e: Exception) {
-        if (running.get()) {
-          Log.e(TAG, "Error accepting connection", e)
+        if (isRunning.get()) {
+          println("[CMCDProxy] Accept error: ${e.message}")
         }
       }
     }
   }
 
-  private fun handleConnection(socket: Socket) {
+  private fun handleClient(client: Socket) {
     try {
-      socket.soTimeout = 30000
+      client.use { socket ->
+        val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+        val writer = PrintWriter(socket.getOutputStream(), true)
 
-      val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-      val output = socket.getOutputStream()
-
-      // Read request line
-      val requestLine = reader.readLine() ?: return
-      val parts = requestLine.split(" ")
-      if (parts.size < 2) {
-        sendError(output, 400, "Bad Request")
-        return
-      }
-
-      val method = parts[0]
-      val path = parts[1]
-
-      // Read headers
-      val requestHeaders = mutableMapOf<String, String>()
-      var line = reader.readLine()
-      while (!line.isNullOrEmpty()) {
-        val colonIndex = line.indexOf(':')
-        if (colonIndex > 0) {
-          val key = line.substring(0, colonIndex).trim()
-          val value = line.substring(colonIndex + 1).trim()
-          requestHeaders[key] = value
+        // Read HTTP request line
+        val requestLine = reader.readLine() ?: return
+        val parts = requestLine.split(" ")
+        if (parts.size < 2) {
+          sendErrorResponse(writer, socket, 400, "Bad Request")
+          return
         }
-        line = reader.readLine()
-      }
 
-      // Extract target URL
-      val targetUrl = extractTargetUrl(path)
-      if (targetUrl == null) {
-        sendError(output, 400, "Missing target URL")
-        return
-      }
+        val method = parts[0]
+        val path = parts[1]
 
-      // Proxy the request
-      proxyRequest(method, targetUrl, requestHeaders, output)
+        // Read headers (we need to consume them to complete the request)
+        while (true) {
+          val line = reader.readLine()
+          if (line.isNullOrEmpty()) break
+        }
 
-    } catch (e: Exception) {
-      Log.e(TAG, "Error handling connection", e)
-    } finally {
-      try {
-        socket.close()
-      } catch (e: Exception) {
-        // Ignore
-      }
-    }
-  }
+        // Only handle GET requests
+        if (method != "GET") {
+          sendErrorResponse(writer, socket, 405, "Method Not Allowed")
+          return
+        }
 
-  private fun extractTargetUrl(path: String): String? {
-    // Format: /proxy?url=ENCODED_URL
-    val uri = try {
-      URI(path)
-    } catch (e: Exception) {
-      return null
-    }
+        // Extract original URL from /proxy?url=...
+        if (!path.startsWith("/proxy?url=")) {
+          sendErrorResponse(writer, socket, 400, "Invalid proxy path")
+          return
+        }
 
-    val query = uri.query ?: return null
-    val params = query.split("&")
-
-    for (param in params) {
-      val keyValue = param.split("=", limit = 2)
-      if (keyValue.size == 2 && keyValue[0] == "url") {
-        return try {
-          URLDecoder.decode(keyValue[1], "UTF-8")
+        val encodedUrl = path.substringAfter("/proxy?url=")
+        val originalUrl = try {
+          URLDecoder.decode(encodedUrl, "UTF-8")
         } catch (e: Exception) {
-          null
+          sendErrorResponse(writer, socket, 400, "Invalid URL encoding")
+          return
         }
-      }
-    }
 
-    return null
+        // Fetch and proxy the content
+        fetchAndProxy(originalUrl, socket)
+      }
+    } catch (e: Exception) {
+      println("[CMCDProxy] Handle client error: ${e.message}")
+    }
   }
 
-  // MARK: - Request Proxying
-
-  private fun proxyRequest(
-    method: String,
-    targetUrl: String,
-    originalHeaders: Map<String, String>,
-    output: OutputStream
-  ) {
+  private fun fetchAndProxy(originalUrl: String, client: Socket) {
     try {
-      val requestBuilder = Request.Builder()
-        .url(targetUrl)
-        .method(method, null)
-
-      // Copy relevant headers
-      val headersToCopy = listOf("Range", "Accept", "Accept-Encoding", "Accept-Language")
-      for (header in headersToCopy) {
-        originalHeaders[header]?.let { requestBuilder.addHeader(header, it) }
-      }
+      val requestBuilder = Request.Builder().url(originalUrl).get()
 
       // Add static headers
-      for ((key, value) in staticHeaders.get()) {
+      for ((key, value) in staticHeaders) {
         requestBuilder.addHeader(key, value)
       }
 
-      // Add dynamic CMCD headers
-      cmcdHeadersProvider.get()?.invoke()?.let { cmcdHeaders ->
-        for ((key, value) in cmcdHeaders) {
-          requestBuilder.addHeader(key, value)
-        }
-        Log.d(TAG, "Added CMCD headers to request: ${targetUrl.substringAfterLast('/')}")
+      // Add dynamic headers from provider
+      dynamicHeadersProvider?.get()?.invoke()?.forEach { (key, value) ->
+        requestBuilder.addHeader(key, value)
       }
 
       val response = httpClient.newCall(requestBuilder.build()).execute()
 
-      // Check if this is an HLS manifest that needs rewriting
-      val contentType = response.header("Content-Type")?.lowercase() ?: ""
-      var body = response.body?.bytes() ?: ByteArray(0)
+      response.use { resp ->
+        val contentType = resp.header("Content-Type") ?: ""
+        val isManifest = contentType.contains("mpegurl", ignoreCase = true) ||
+          contentType.contains("x-mpegURL", ignoreCase = true) ||
+          originalUrl.lowercase().endsWith(".m3u8")
 
-      if (contentType.contains("mpegurl") || contentType.contains("x-mpegurl")) {
-        body = rewriteManifest(body, targetUrl)
+        var bodyBytes = resp.body?.bytes() ?: ByteArray(0)
+
+        if (isManifest) {
+          val manifestContent = String(bodyBytes, Charsets.UTF_8)
+          val rewrittenContent = rewriteHLSManifest(manifestContent, originalUrl)
+          bodyBytes = rewrittenContent.toByteArray(Charsets.UTF_8)
+        }
+
+        sendResponse(client, resp.code, resp.headers.toMap(), bodyBytes)
       }
-
-      // Send response
-      sendResponse(
-        output = output,
-        statusCode = response.code,
-        statusMessage = response.message,
-        headers = response.headers.toMap(),
-        body = body
-      )
-
-      response.close()
-
     } catch (e: Exception) {
-      Log.e(TAG, "Error proxying request", e)
-      sendError(output, 502, "Bad Gateway")
+      println("[CMCDProxy] Fetch error for $originalUrl: ${e.message}")
+      try {
+        val writer = PrintWriter(client.getOutputStream(), true)
+        sendErrorResponse(writer, client, 502, "Bad Gateway: ${e.message}")
+      } catch (writeError: Exception) {
+        // Ignore write errors
+      }
     }
   }
 
-  // MARK: - Response Handling
-
-  private fun sendResponse(
-    output: OutputStream,
-    statusCode: Int,
-    statusMessage: String,
-    headers: Map<String, String>,
-    body: ByteArray
-  ) {
-    val sb = StringBuilder()
-    sb.append("HTTP/1.1 $statusCode $statusMessage\r\n")
-    sb.append("Content-Length: ${body.size}\r\n")
-    sb.append("Connection: close\r\n")
-
-    // Include relevant headers
-    val headersToInclude = listOf("Content-Type", "Cache-Control", "Accept-Ranges", "Content-Range")
-    for (header in headersToInclude) {
-      headers[header]?.let { sb.append("$header: $it\r\n") }
-    }
-
-    sb.append("Access-Control-Allow-Origin: *\r\n")
-    sb.append("\r\n")
-
-    output.write(sb.toString().toByteArray(Charsets.UTF_8))
-    output.write(body)
-    output.flush()
-  }
-
-  private fun sendError(output: OutputStream, statusCode: Int, message: String) {
-    val body = message.toByteArray(Charsets.UTF_8)
-    val response = """
-      HTTP/1.1 $statusCode $message
-      Content-Type: text/plain
-      Content-Length: ${body.size}
-      Connection: close
-
-      $message
-    """.trimIndent()
-
-    output.write(response.toByteArray(Charsets.UTF_8))
-    output.flush()
-  }
-
-  // MARK: - Manifest Rewriting
-
-  private fun rewriteManifest(data: ByteArray, baseUrlString: String): ByteArray {
-    val manifest = String(data, Charsets.UTF_8)
-    val baseUrl = try {
-      URI(baseUrlString)
+  private fun rewriteHLSManifest(content: String, baseUrl: String): String {
+    val baseUri = try {
+      URI(baseUrl)
     } catch (e: Exception) {
-      return data
+      return content
     }
 
-    val proxyBase = "http://127.0.0.1:$port/proxy?url="
-    val lines = manifest.split("\n")
-    val rewrittenLines = mutableListOf<String>()
+    val result = StringBuilder()
+    val lines = content.split("\n")
 
     for (line in lines) {
-      val trimmed = line.trim()
+      var newLine = line
 
-      when {
-        trimmed.isEmpty() -> rewrittenLines.add(line)
-
-        trimmed.startsWith("#") && trimmed.contains("URI=\"") -> {
-          rewrittenLines.add(rewriteUriAttributes(line, baseUrl, proxyBase))
-        }
-
-        trimmed.startsWith("#") -> rewrittenLines.add(line)
-
-        else -> {
-          val proxyUrl = createProxyUrl(trimmed, baseUrl, proxyBase)
-          rewrittenLines.add(proxyUrl ?: line)
+      // Rewrite URI attributes in tags like #EXT-X-KEY, #EXT-X-MAP, etc.
+      if (line.contains("URI=\"")) {
+        newLine = rewriteURIAttributes(line, baseUri)
+      }
+      // Rewrite segment/playlist URLs (lines that don't start with #)
+      else if (!line.startsWith("#") && line.trim().isNotEmpty()) {
+        val segmentUrl = resolveUrl(line.trim(), baseUri)
+        if (segmentUrl != null) {
+          val proxyUrl = createProxyUrl(segmentUrl)
+          if (proxyUrl != null) {
+            newLine = proxyUrl
+          }
         }
       }
+
+      result.append(newLine).append("\n")
     }
 
-    Log.d(TAG, "Rewrote HLS manifest URLs (${lines.size} lines)")
-    return rewrittenLines.joinToString("\n").toByteArray(Charsets.UTF_8)
+    return result.toString()
   }
 
-  private fun rewriteUriAttributes(line: String, baseUrl: URI, proxyBase: String): String {
-    val pattern = Regex("URI=\"([^\"]+)\"")
-    return pattern.replace(line) { match ->
-      val uri = match.groupValues[1]
-      val proxyUrl = createProxyUrl(uri, baseUrl, proxyBase)
-      "URI=\"${proxyUrl ?: uri}\""
+  private fun rewriteURIAttributes(line: String, baseUri: URI): String {
+    val regex = Regex("""URI="([^"]*)"""")
+    return regex.replace(line) { matchResult ->
+      val uri = matchResult.groupValues[1]
+      val resolvedUrl = resolveUrl(uri, baseUri)
+      if (resolvedUrl != null) {
+        val proxyUrl = createProxyUrl(resolvedUrl)
+        if (proxyUrl != null) {
+          return@replace "URI=\"$proxyUrl\""
+        }
+      }
+      matchResult.value
     }
   }
 
-  private fun createProxyUrl(urlString: String, baseUrl: URI, proxyBase: String): String? {
-    val trimmed = urlString.trim()
-
-    val absoluteUrl = try {
-      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        trimmed
+  private fun resolveUrl(urlString: String, baseUri: URI): String? {
+    return try {
+      if (urlString.startsWith("http://") || urlString.startsWith("https://")) {
+        urlString
       } else {
-        baseUrl.resolve(trimmed).toString()
+        baseUri.resolve(urlString).toString()
       }
     } catch (e: Exception) {
-      return null
+      null
     }
+  }
 
-    val encoded = try {
-      URLEncoder.encode(absoluteUrl, "UTF-8")
+  private fun sendResponse(client: Socket, statusCode: Int, headers: Map<String, List<String>>, body: ByteArray) {
+    try {
+      val output = client.getOutputStream()
+      val statusMessage = httpStatusMessage(statusCode)
+
+      val headerBuilder = StringBuilder()
+      headerBuilder.append("HTTP/1.1 $statusCode $statusMessage\r\n")
+      headerBuilder.append("Access-Control-Allow-Origin: *\r\n")
+
+      // Forward relevant headers, skip problematic ones
+      for ((key, values) in headers) {
+        val lowerKey = key.lowercase()
+        if (lowerKey == "content-encoding" || lowerKey == "transfer-encoding" || lowerKey == "content-length") {
+          continue
+        }
+        for (value in values) {
+          headerBuilder.append("$key: $value\r\n")
+        }
+      }
+
+      headerBuilder.append("Content-Length: ${body.size}\r\n")
+      headerBuilder.append("\r\n")
+
+      output.write(headerBuilder.toString().toByteArray(Charsets.UTF_8))
+      output.write(body)
+      output.flush()
     } catch (e: Exception) {
-      return null
+      println("[CMCDProxy] Send response error: ${e.message}")
     }
-
-    return proxyBase + encoded
   }
-}
 
-// Extension to convert OkHttp Headers to Map
-private fun okhttp3.Headers.toMap(): Map<String, String> {
-  val map = mutableMapOf<String, String>()
-  for (i in 0 until size) {
-    map[name(i)] = value(i)
+  private fun sendErrorResponse(writer: PrintWriter, client: Socket, statusCode: Int, message: String) {
+    try {
+      val statusMessage = httpStatusMessage(statusCode)
+      val body = message.toByteArray(Charsets.UTF_8)
+
+      val output = client.getOutputStream()
+      val response = """
+        HTTP/1.1 $statusCode $statusMessage
+        Content-Type: text/plain
+        Content-Length: ${body.size}
+        Access-Control-Allow-Origin: *
+
+      """.trimIndent() + "\r\n"
+
+      output.write(response.toByteArray(Charsets.UTF_8))
+      output.write(body)
+      output.flush()
+    } catch (e: Exception) {
+      // Ignore
+    }
   }
-  return map
+
+  private fun httpStatusMessage(code: Int): String {
+    return when (code) {
+      200 -> "OK"
+      400 -> "Bad Request"
+      404 -> "Not Found"
+      405 -> "Method Not Allowed"
+      500 -> "Internal Server Error"
+      502 -> "Bad Gateway"
+      else -> "Unknown"
+    }
+  }
+
+  companion object {
+    val shared = CMCDProxy()
+  }
 }

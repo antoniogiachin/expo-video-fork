@@ -2,7 +2,6 @@ package expo.modules.video
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -13,53 +12,21 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import expo.modules.video.records.VideoSource
-import expo.modules.video.utils.DynamicHeaderInterceptor
-import expo.modules.video.utils.DynamicHeaderProvider
+import expo.modules.video.managers.VideoManager
 import okhttp3.OkHttpClient
-import java.lang.ref.WeakReference
-
-private const val TAG = "EXPO_VIDEO"
 
 @OptIn(UnstableApi::class)
-fun buildBaseDataSourceFactory(
-  context: Context,
-  videoSource: VideoSource,
-  dynamicHeaderProvider: DynamicHeaderProvider? = null
-): DataSource.Factory {
-  Log.d(TAG, "buildBaseDataSourceFactory CALLED")
-  Log.d(TAG, "uri scheme: ${videoSource.uri?.scheme}")
-  Log.d(TAG, "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
-
+fun buildBaseDataSourceFactory(context: Context, videoSource: VideoSource): DataSource.Factory {
   return if (videoSource.uri?.scheme?.startsWith("http") == true) {
-    buildOkHttpDataSourceFactory(context, videoSource, dynamicHeaderProvider)
+    buildOkHttpDataSourceFactory(context, videoSource)
   } else {
     DefaultDataSource.Factory(context)
   }
 }
 
 @OptIn(UnstableApi::class)
-fun buildOkHttpDataSourceFactory(
-  context: Context,
-  videoSource: VideoSource,
-  dynamicHeaderProvider: DynamicHeaderProvider? = null
-): OkHttpDataSource.Factory {
-  val clientBuilder = OkHttpClient.Builder()
-
-  Log.d(TAG, "buildOkHttpDataSourceFactory called")
-  Log.d(TAG, "enableDynamicHeaders: ${videoSource.enableDynamicHeaders}")
-  Log.d(TAG, "dynamicHeaderProvider is null: ${dynamicHeaderProvider == null}")
-
-  // Add dynamic header interceptor if enabled and provider is available
-  if (videoSource.enableDynamicHeaders && dynamicHeaderProvider != null) {
-    Log.d(TAG, "ADDING DynamicHeaderInterceptor!")
-    clientBuilder.addInterceptor(
-      DynamicHeaderInterceptor(WeakReference(dynamicHeaderProvider))
-    )
-  } else {
-    Log.d(TAG, "NOT adding interceptor - conditions not met")
-  }
-
-  val client = clientBuilder.build()
+fun buildOkHttpDataSourceFactory(context: Context, videoSource: VideoSource): OkHttpDataSource.Factory {
+  val client = OkHttpClient.Builder().build()
 
   // If the application name has ANY non-ASCII characters, we need to strip them out. This is because using non-ASCII characters
   // in the User-Agent header can cause issues with getting the media to play.
@@ -78,34 +45,24 @@ fun buildOkHttpDataSourceFactory(
 }
 
 @OptIn(UnstableApi::class)
-fun buildCacheDataSourceFactory(
-  context: Context,
-  videoSource: VideoSource,
-  dynamicHeaderProvider: DynamicHeaderProvider? = null
-): DataSource.Factory {
+fun buildCacheDataSourceFactory(context: Context, videoSource: VideoSource): DataSource.Factory {
   return CacheDataSource.Factory().apply {
     setCache(VideoManager.cache.instance)
     setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-    setUpstreamDataSourceFactory(buildBaseDataSourceFactory(context, videoSource, dynamicHeaderProvider))
+    setUpstreamDataSourceFactory(buildBaseDataSourceFactory(context, videoSource))
   }
 }
 
-@OptIn(UnstableApi::class)
 fun buildMediaSourceFactory(context: Context, dataSourceFactory: DataSource.Factory): MediaSource.Factory {
-  Log.d(TAG, "buildMediaSourceFactory - using custom DataSourceFactory (no context fallback)")
-  return DefaultMediaSourceFactory(dataSourceFactory)
+  return DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory)
 }
 
 @OptIn(UnstableApi::class)
-fun buildExpoVideoMediaSource(
-  context: Context,
-  videoSource: VideoSource,
-  dynamicHeaderProvider: DynamicHeaderProvider? = null
-): MediaSource {
+fun buildExpoVideoMediaSource(context: Context, videoSource: VideoSource): MediaSource {
   val dataSourceFactory = if (videoSource.useCaching) {
-    buildCacheDataSourceFactory(context, videoSource, dynamicHeaderProvider)
+    buildCacheDataSourceFactory(context, videoSource)
   } else {
-    buildBaseDataSourceFactory(context, videoSource, dynamicHeaderProvider)
+    buildBaseDataSourceFactory(context, videoSource)
   }
   val mediaSourceFactory = buildMediaSourceFactory(context, dataSourceFactory)
   val mediaItem = videoSource.toMediaItem(context)

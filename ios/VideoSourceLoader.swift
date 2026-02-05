@@ -20,6 +20,7 @@ internal class VideoSourceLoader {
    Asynchronously loads a video item from the provided `videoSource`. If another loading operation is in progress, it will be cancelled.
 
    - Parameter videoSource: The source description for the video to load. If `nil`, the current player item will be cleared.
+   - Parameter player: The `VideoPlayer` instance whose current item will be replaced.
    */
   func load(videoSource: VideoSource) async throws -> VideoPlayerItem? {
     isLoading = true

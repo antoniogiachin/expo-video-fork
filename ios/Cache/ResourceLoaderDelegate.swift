@@ -36,12 +36,7 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     return self.saveFilePath
   }
 
-  init(
-    url: URL,
-    saveFilePath: String,
-    fileExtension: String,
-    urlRequestHeaders: [String: String]?
-  ) {
+  init(url: URL, saveFilePath: String, fileExtension: String, urlRequestHeaders: [String: String]?) {
     self.url = url
     self.saveFilePath = saveFilePath
     self.fileExtension = fileExtension
@@ -179,15 +174,14 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     request?.loadingRequest.contentInformationRequest?.contentLength = response.expectedContentLength
     request?.loadingRequest.contentInformationRequest?.isByteRangeAccessSupported = true
 
-    if let mimeType = response.mimeType {
+    if let mimeType = response.mimeType, isSupported(mimeType: mimeType) {
       let rawUti = UTType(mimeType: mimeType)?.identifier
       request?.loadingRequest.contentInformationRequest?.contentType = rawUti ?? response.mimeType
-    }
-
-    if let mimeType = response.mimeType, isSupported(mimeType: mimeType) {
       cachedResource.onResponseReceived(response: response)
     } else {
-      onError?(VideoCacheUnsupportedFormatException(response.mimeType ?? "unknown"))
+      // We can't control the AVPlayer.error property that will be set after the player fails to load the resource
+      // We have an additional field that can be used to return a more specific error
+      onError?(VideoCacheUnsupportedFormatException(response.mimeType ?? ""))
     }
   }
 
@@ -255,8 +249,7 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
   }
 
   private func isSupported(mimeType: String?) -> Bool {
-    guard let mimeType = mimeType else { return false }
-    return mimeType.starts(with: "video/")
+    return mimeType?.starts(with: "video/") ?? false
   }
 
   private func createUrlRequest() -> URLRequest {
@@ -264,7 +257,6 @@ final class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URL
     request.timeoutInterval = Self.requestTimeoutInterval
 
     self.urlRequestHeaders?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-
     return request
   }
 

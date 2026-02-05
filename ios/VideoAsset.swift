@@ -55,24 +55,17 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
       return
     }
 
+    // Enable caching
     useCaching = true
-    resourceLoaderDelegate = ResourceLoaderDelegate(
-      url: url,
-      saveFilePath: saveFilePath,
-      fileExtension: fileExtension,
-      urlRequestHeaders: urlRequestHeaders
-    )
+    resourceLoaderDelegate = ResourceLoaderDelegate(url: url, saveFilePath: saveFilePath, fileExtension: fileExtension, urlRequestHeaders: urlRequestHeaders)
     super.init(url: urlWithCustomScheme, options: assetOptions)
 
     resourceLoaderDelegate?.onError = { [weak self] error in
       self?.cachingError = error
     }
     self.resourceLoader.setDelegate(resourceLoaderDelegate, queue: VideoCacheManager.shared.cacheQueue)
-
-    if useCaching {
-      self.createCacheDirectoryIfNeeded()
-      VideoCacheManager.shared.ensureCacheIntegrity(forSavePath: saveFilePath)
-    }
+    self.createCacheDirectoryIfNeeded()
+    VideoCacheManager.shared.ensureCacheIntegrity(forSavePath: saveFilePath)
   }
 
   deinit {

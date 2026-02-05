@@ -23,6 +23,28 @@ public final class VideoModule: Module {
       return try await VideoCacheManager.shared.clearAllCache()
     }
 
+    // MARK: - CMCD Proxy Functions
+
+    AsyncFunction("startCMCDProxy") {
+      try await CMCDProxyManager.shared.startAndWait()
+    }
+
+    Function("stopCMCDProxy") {
+      CMCDProxyManager.shared.stop()
+    }
+
+    Function("isCMCDProxyRunning") { () -> Bool in
+      return CMCDProxyManager.shared.isRunning
+    }
+
+    Function("getCMCDProxyPort") { () -> Int in
+      return Int(CMCDProxyManager.shared.port)
+    }
+
+    Function("setCMCDProxyStaticHeaders") { (headers: [String: String]) in
+      CMCDProxyManager.shared.setStaticHeaders(headers)
+    }
+
     View(VideoView.self) {
       Events(
         "onPictureInPictureStart",
@@ -57,12 +79,6 @@ public final class VideoModule: Module {
           width: layer.frame.width,
           height: layer.frame.height
         )
-      }
-
-      Prop("allowsFullscreen") { (view, allowsFullscreen: Bool?) in
-        #if !os(tvOS)
-        view.playerViewController.setValue(allowsFullscreen ?? true, forKey: "allowsEnteringFullScreen")
-        #endif
       }
 
       Prop("fullscreenOptions") {(view, options: FullscreenOptions?) in
@@ -320,6 +336,20 @@ public final class VideoModule: Module {
         player.ref.preventsDisplaySleepDuringVideoPlayback = keepScreenOnWhilePlaying
       }
 
+      Property("seekTolerance") { player -> SeekTolerance in
+        return player.seeker.seekTolerance
+      }
+      .set { player, seekTolerance in
+        player.seeker.seekTolerance = seekTolerance
+      }
+
+      Property("scrubbingModeOptions") { player -> ScrubbingModeOptions in
+        return player.seeker.scrubbingModeOptions
+      }
+      .set { player, options in
+        player.seeker.scrubbingModeOptions = options
+      }
+
       Property("dynamicRequestHeaders") { player -> [String: String] in
         return player.dynamicRequestHeaders
       }
@@ -348,11 +378,11 @@ public final class VideoModule: Module {
       Function("seekBy") { (player, seconds: Double) in
         let newTime = player.ref.currentTime() + CMTime(seconds: seconds, preferredTimescale: .max)
 
-        player.ref.seek(to: newTime)
+        player.seeker.seek(to: newTime)
       }
 
       Function("replay") { player in
-        player.ref.seek(to: CMTime.zero)
+        player.seeker.seek(to: CMTime.zero)
         player.ref.play()
       }
 
@@ -385,64 +415,6 @@ public final class VideoModule: Module {
 
     OnAppEntersForeground {
       VideoManager.shared.onAppForegrounded()
-    }
-
-    // MARK: - CMCD Proxy Functions
-
-    AsyncFunction("startCMCDProxy") {
-      if #available(iOS 13.0, *) {
-        try CMCDProxyManager.shared.start()
-      } else {
-        throw Exception(name: "CMCDProxyUnavailable", description: "CMCD Proxy requires iOS 13.0 or later")
-      }
-    }
-
-    Function("stopCMCDProxy") {
-      if #available(iOS 13.0, *) {
-        CMCDProxyManager.shared.stop()
-      }
-    }
-
-    Function("isCMCDProxyRunning") { () -> Bool in
-      if #available(iOS 13.0, *) {
-        return CMCDProxyManager.shared.isRunning
-      }
-      return false
-    }
-
-    Function("getCMCDProxyPort") { () -> Int in
-      if #available(iOS 13.0, *) {
-        return Int(CMCDProxyManager.shared.port)
-      }
-      return 0
-    }
-
-    Function("getCMCDProxyBaseUrl") { () -> String? in
-      if #available(iOS 13.0, *) {
-        return CMCDProxyManager.shared.baseUrl
-      }
-      return nil
-    }
-
-    Function("createCMCDProxyUrl") { (originalUrl: String) -> String? in
-      if #available(iOS 13.0, *) {
-        return CMCDProxyManager.shared.createProxyUrl(for: originalUrl)
-      }
-      return nil
-    }
-
-    Function("extractCMCDOriginalUrl") { (proxyUrl: String) -> String? in
-      if #available(iOS 13.0, *) {
-        guard let url = URL(string: proxyUrl) else { return nil }
-        return CMCDProxyManager.shared.extractOriginalUrl(from: url)?.absoluteString
-      }
-      return nil
-    }
-
-    Function("setCMCDProxyStaticHeaders") { (headers: [String: String]) in
-      if #available(iOS 13.0, *) {
-        CMCDProxyManager.shared.setStaticHeaders(headers)
-      }
     }
   }
 

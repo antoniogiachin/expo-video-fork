@@ -4,13 +4,13 @@ plugins {
 }
 
 group = 'host.exp.exponent'
-version = '3.0.15'
+version = '55.0.4'
 
 android {
   namespace "expo.modules.video"
   defaultConfig {
     versionCode 1
-    versionName '3.0.15'
+    versionName '55.0.4'
   }
 }
 
@@ -26,7 +26,7 @@ dependencies {
   implementation "androidx.media3:media3-ui:${androidxMedia3Version}"
   implementation "androidx.media3:media3-datasource-okhttp:${androidxMedia3Version}"
 
-  def fragment_version = "1.6.2"
+  def fragment_version = "1.8.9"
   implementation "androidx.fragment:fragment:$fragment_version"
   implementation "androidx.fragment:fragment-ktx:$fragment_version"
 }

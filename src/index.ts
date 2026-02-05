@@ -6,8 +6,6 @@ export {
 } from './VideoModule';
 export { VideoView } from './VideoView';
 export { useVideoPlayer } from './VideoPlayer';
-export { CMCDProxy, formatCmcdHeaders, generateSessionId } from './CMCDProxy';
-export type { CmcdData } from './CMCDProxy';
 
 export type { VideoContentFit, VideoViewProps, SurfaceType } from './VideoView.types';
 export type { VideoThumbnail } from './VideoThumbnail';
@@ -15,23 +13,10 @@ export type { VideoThumbnail } from './VideoThumbnail';
 export { createVideoPlayer } from './VideoPlayer';
 export { default as VideoAirPlayButton } from './VideoAirPlayButton';
 
-export type {
-  VideoPlayer,
-  VideoPlayerStatus,
-  VideoSource,
-  PlayerError,
-  VideoMetadata,
-  DRMType,
-  DRMOptions,
-  BufferOptions,
-  AudioMixingMode,
-  VideoThumbnailOptions,
-  VideoSize,
-  SubtitleTrack,
-  AudioTrack,
-  VideoTrack,
-  ContentType,
-} from './VideoPlayer.types';
+export { CMCDProxy, formatCmcdHeaders, generateSessionId } from './CMCDProxy';
+export type { CmcdData } from './CMCDProxy';
+
+export type * from './VideoPlayer.types';
 
 export type * from './VideoPlayerEvents.types';
 export type * from './VideoAirPlayButton.types';

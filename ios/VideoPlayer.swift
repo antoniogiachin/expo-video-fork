@@ -11,6 +11,29 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
   lazy var subtitles: VideoPlayerSubtitles = VideoPlayerSubtitles(owner: self)
   private var dangerousPropertiesStore = DangerousPropertiesStore()
   lazy var audioTracks: VideoPlayerAudioTracks = VideoPlayerAudioTracks(owner: self)
+  lazy var seeker: VideoPlayerSeeker = VideoPlayerSeeker(player: self)
+  private var tracksLoadingTask: Task<(), Never>?
+
+  // MARK: - Dynamic Headers Support
+
+  private let dynamicHeadersLock = NSLock()
+  private var _dynamicRequestHeaders: [String: String] = [:]
+
+  /// Headers to inject dynamically into all segment/chunk HTTP requests.
+  /// Can be updated at any time without reloading the source.
+  /// Requires `enableDynamicHeaders: true` in VideoSource.
+  var dynamicRequestHeaders: [String: String] {
+    get {
+      dynamicHeadersLock.lock()
+      defer { dynamicHeadersLock.unlock() }
+      return _dynamicRequestHeaders
+    }
+    set {
+      dynamicHeadersLock.lock()
+      defer { dynamicHeadersLock.unlock() }
+      _dynamicRequestHeaders = newValue
+    }
+  }
 
   var loop = false
   var audioMixingMode: AudioMixingMode = .doNotMix {
@@ -52,7 +75,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
         return
       }
 
-      ref.seek(to: timeToSeek, toleranceBefore: .zero, toleranceAfter: .zero)
+      seeker.seek(to: timeToSeek)
     }
   }
 
@@ -143,71 +166,6 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     return getBufferedPosition()
   }
 
-  // Thread-safe storage for dynamic headers (CMCD)
-  private let dynamicHeadersLock = NSLock()
-  private var _dynamicRequestHeaders: [String: String] = [:]
-
-  var dynamicRequestHeaders: [String: String] {
-    get {
-      dynamicHeadersLock.lock()
-      defer { dynamicHeadersLock.unlock() }
-      return _dynamicRequestHeaders
-    }
-    set {
-      dynamicHeadersLock.lock()
-      defer { dynamicHeadersLock.unlock() }
-      _dynamicRequestHeaders = newValue
-    }
-  }
-
-  // MARK: - CMCD Proxy Support
-
-  /// Processes the video source for CMCD proxy support.
-  /// If `enableDynamicHeaders` is true, starts the proxy and transforms the URL.
-  private func processSourceForCMCD(_ source: VideoSource) -> VideoSource {
-    guard source.enableDynamicHeaders else {
-      return source
-    }
-
-    guard #available(iOS 13.0, *) else {
-      log.warn("[VideoPlayer] CMCD proxy requires iOS 13.0+, ignoring enableDynamicHeaders")
-      return source
-    }
-
-    // Start proxy if needed
-    if !CMCDProxyManager.shared.isRunning {
-      do {
-        try CMCDProxyManager.shared.start()
-      } catch {
-        log.error("[VideoPlayer] Failed to start CMCD proxy: \(error)")
-        return source
-      }
-    }
-
-    // Configure proxy to read headers from this player
-    CMCDProxyManager.shared.configureForPlayer(self)
-
-    // Transform URL to proxy URL
-    guard let originalUri = source.uri,
-          let proxyUrl = CMCDProxyManager.shared.createProxyUrl(for: originalUri) else {
-      log.warn("[VideoPlayer] Failed to create proxy URL for \(source.uri?.absoluteString ?? "nil")")
-      return source
-    }
-
-    log.info("[VideoPlayer] CMCD proxy enabled, URL transformed to: \(proxyUrl.absoluteString)")
-
-    // Create new source with proxy URL
-    var proxiedSource = VideoSource()
-    proxiedSource.uri = proxyUrl
-    proxiedSource.drm = source.drm
-    proxiedSource.metadata = source.metadata
-    proxiedSource.headers = source.headers
-    proxiedSource.useCaching = source.useCaching
-    proxiedSource.contentType = source.contentType
-    proxiedSource.enableDynamicHeaders = false // Don't process again
-    return proxiedSource
-  }
-
   private(set) var availableVideoTracks: [VideoTrack] = []
   private(set) var currentVideoTrack: VideoTrack? {
     didSet {
@@ -249,6 +207,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
     VideoManager.shared.unregister(videoPlayer: self)
 
     videoSourceLoader.cancelCurrentTask()
+    tracksLoadingTask?.cancel()
 
     // We have to replace from the main thread because of KVOs (see comment in VideoSourceLoader).
     // Moreover, in this case we have to keep a strong reference to AVPlayer and remove its item
@@ -261,12 +220,8 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
   func replaceCurrentItem(with videoSource: VideoSource?) throws {
     dangerousPropertiesStore.ownerIsReplacing = true
     videoSourceLoader.cancelCurrentTask()
-
-    // Process source for CMCD proxy if needed
-    let processedSource = videoSource.map { processSourceForCMCD($0) }
-
     guard
-      let videoSource = processedSource,
+      let videoSource = videoSource,
       let playerItem = VideoPlayerItem(videoSource: videoSource)
     else {
       clearCurrentItem()
@@ -303,13 +258,15 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
    * Replaces the current item, while loading the AVAsset on a different thread. The synchronous version can lock the main thread for extended periods of time.
    */
   func replaceCurrentItem(with videoSource: VideoSource?) async throws {
-    guard let originalSource = videoSource, originalSource.uri != nil else {
+    guard var videoSource, videoSource.uri != nil else {
       clearCurrentItem()
       return
     }
 
-    // Process source for CMCD proxy if needed
-    let videoSource = processSourceForCMCD(originalSource)
+    // Process source for proxy if dynamic headers are enabled
+    if videoSource.enableDynamicHeaders {
+      videoSource = await processSourceForProxy(videoSource)
+    }
 
     dangerousPropertiesStore.ownerIsReplacing = true
     guard let playerItem = try await videoSourceLoader.load(videoSource: videoSource) else {
@@ -318,7 +275,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
       return
     }
 
-    if let drm = originalSource.drm {
+    if let drm = videoSource.drm {
       try drm.type.assertIsSupported()
       self.contentKeyManager.addContentKeyRequest(videoSource: videoSource, asset: playerItem.urlAsset)
     }
@@ -348,6 +305,40 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
       dangerousPropertiesStore.ownerIsReplacing = false
     }
     return
+  }
+
+  // MARK: - Dynamic Headers Proxy Support
+
+  /// Processes the video source for proxy if dynamic headers are enabled.
+  /// Returns a new source with proxied URL, or the original source if proxy is not needed/failed.
+  private func processSourceForProxy(_ source: VideoSource) async -> VideoSource {
+    guard source.enableDynamicHeaders, let uri = source.uri else {
+      return source
+    }
+
+    // Start and wait for the proxy to be ready
+    do {
+      try await CMCDProxyManager.shared.startAndWait()
+    } catch {
+      print("[CMCDProxy] Failed to start proxy: \(error). Using original source.")
+      return source
+    }
+
+    // Configure the proxy to use headers from this player
+    CMCDProxyManager.shared.configureForPlayer(self)
+
+    // Create proxy URL
+    guard let proxyUrl = CMCDProxyManager.shared.createProxyUrl(for: uri) else {
+      print("[CMCDProxy] Failed to create proxy URL. Using original source.")
+      return source
+    }
+
+    // Return a new source with the proxied URL
+    var proxiedSource = source
+    proxiedSource.uri = proxyUrl
+    // Disable dynamic headers on the proxied source to prevent infinite loop
+    proxiedSource.enableDynamicHeaders = false
+    return proxiedSource
   }
 
   private func getBufferedPosition() -> Double {
@@ -407,7 +398,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
   func onPlayedToEnd(player: AVPlayer) {
     safeEmit(event: "playToEnd")
     if loop {
-      self.ref.seek(to: .zero)
+      seeker.seek(to: .zero)
       self.ref.play()
     }
   }
@@ -426,28 +417,19 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
   }
 
   func onLoadedPlayerItem(player: AVPlayer, playerItem: AVPlayerItem?) {
-    // This event means that a new player item has been loaded so the subtitle tracks should change
-    let oldTracks = subtitles.availableSubtitleTracks
-    self.subtitles.onNewPlayerItemLoaded(playerItem: playerItem)
-    let payload = SubtitleTracksChangedEventPayload(
-      availableSubtitleTracks: subtitles.availableSubtitleTracks,
-      oldAvailableSubtitleTracks: oldTracks
-    )
-    safeEmit(event: "availableSubtitleTracksChange", payload: payload)
-
-    // Handle audio tracks
-    let oldAudioTracks = audioTracks.availableAudioTracks
-    self.audioTracks.onNewPlayerItemLoaded(playerItem: playerItem)
-    let audioPayload = AudioTracksChangedEventPayload(
-      availableAudioTracks: audioTracks.availableAudioTracks,
-      oldAvailableAudioTracks: oldAudioTracks
-    )
-    safeEmit(event: "availableAudioTracksChange", payload: audioPayload)
-
-    Task {
+    // Loading tracks requires doing some long tasks, this callback can be called from the main thread
+    // Which could cause hangs
+    tracksLoadingTask?.cancel()
+    tracksLoadingTask = Task {
+      let audioPayload = await self.audioTracks.onNewPlayerItemLoaded(playerItem: playerItem)
+      let subtitlesChangePayload = await self.subtitles.onNewPlayerItemLoaded(playerItem: playerItem)
       let videoPlayerItem: VideoPlayerItem? = playerItem as? VideoPlayerItem
-      // Those properties will be already loaded 99.9% of time, so the event delay should be almost 0
+
       availableVideoTracks = await videoPlayerItem?.videoTracks ?? []
+
+      guard !Task.isCancelled else {
+        return
+      }
 
       let videoSourceLoadedPayload = VideoSourceLoadedEventPayload(
         videoSource: videoPlayerItem?.videoSource,
@@ -456,7 +438,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
         availableSubtitleTracks: subtitles.availableSubtitleTracks,
         availableAudioTracks: audioTracks.availableAudioTracks
       )
+
       safeEmit(event: "sourceLoad", payload: videoSourceLoadedPayload)
+      safeEmit(event: "availableSubtitleTracksChange", payload: subtitlesChangePayload)
+      safeEmit(event: "availableAudioTracksChange", payload: audioPayload)
     }
   }
 
