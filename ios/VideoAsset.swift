@@ -66,8 +66,17 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
       log.warn("CachingPlayerItem error: Urls without a scheme are not supported, the resource won't be cached")
     }
 
-    // Use ResourceLoaderDelegate when caching OR when dynamic headers are enabled
-    let shouldUseResourceLoader = videoSource.useCaching || videoSource.enableDynamicHeaders
+    // Check if content is HLS (required for ResourceLoaderDelegate to work)
+    let isHls = url.pathExtension.lowercased() == "m3u8" || videoSource.contentType == .hls
+
+    // Use ResourceLoaderDelegate when:
+    // - Caching is enabled, OR
+    // - Dynamic headers are enabled AND content is HLS (ResourceLoaderDelegate only works with HLS)
+    let shouldUseResourceLoader = videoSource.useCaching || (videoSource.enableDynamicHeaders && isHls)
+
+    if videoSource.enableDynamicHeaders && !isHls {
+      log.warn("Dynamic headers are only supported for HLS content. The headers will be ignored for this source.")
+    }
 
     guard let saveFilePath, let urlWithCustomScheme, shouldUseResourceLoader else {
       // Initialize with no caching and no dynamic headers
