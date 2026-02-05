@@ -32,7 +32,8 @@ final class CMCDProxy: @unchecked Sendable {
 
   // MARK: - Lifecycle
 
-  /// Starts the proxy server on a random available port
+  /// Starts the proxy server on a random available port.
+  /// This method blocks until the proxy is ready or fails to start.
   func start() throws {
     guard !isRunning else { return }
 
@@ -42,6 +43,10 @@ final class CMCDProxy: @unchecked Sendable {
 
     listener = try NWListener(using: parameters, on: .any)
 
+    // Use semaphore to wait for proxy to be ready
+    let semaphore = DispatchSemaphore(value: 0)
+    var startError: Error?
+
     listener?.stateUpdateHandler = { [weak self] state in
       switch state {
       case .ready:
@@ -50,9 +55,12 @@ final class CMCDProxy: @unchecked Sendable {
           self?.isRunning = true
           log.info("[CMCDProxy] Started on port \(port)")
         }
+        semaphore.signal()
       case .failed(let error):
         log.error("[CMCDProxy] Failed to start: \(error)")
         self?.isRunning = false
+        startError = error
+        semaphore.signal()
       case .cancelled:
         self?.isRunning = false
         log.info("[CMCDProxy] Stopped")
@@ -66,6 +74,22 @@ final class CMCDProxy: @unchecked Sendable {
     }
 
     listener?.start(queue: queue)
+
+    // Wait for the proxy to be ready (with timeout)
+    let timeout = DispatchTime.now() + .seconds(5)
+    let result = semaphore.wait(timeout: timeout)
+
+    if result == .timedOut {
+      listener?.cancel()
+      listener = nil
+      throw NSError(domain: "CMCDProxy", code: -1, userInfo: [NSLocalizedDescriptionKey: "Proxy startup timed out"])
+    }
+
+    if let error = startError {
+      listener?.cancel()
+      listener = nil
+      throw error
+    }
   }
 
   /// Stops the proxy server
